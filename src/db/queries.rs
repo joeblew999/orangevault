@@ -1023,6 +1023,50 @@ pub async fn delete_send(db: &D1Database, uuid: &str) -> Result<()> {
     Ok(())
 }
 
+// --- Cron / purge queries ---
+
+/// Return UUIDs + data of file sends that are past their deletion_date.
+pub async fn find_expired_file_sends(db: &D1Database, now: &str) -> Result<Vec<Send>> {
+    db.prepare("SELECT * FROM sends WHERE deletion_date <= ?1 AND atype = 1")
+        .bind_refs([&D1Type::Text(now)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<Send>()
+        .map_err(d1_err)
+}
+
+/// Delete all sends whose deletion_date has passed.
+pub async fn purge_expired_sends(db: &D1Database, now: &str) -> Result<()> {
+    db.prepare("DELETE FROM sends WHERE deletion_date <= ?1")
+        .bind_refs([&D1Type::Text(now)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+/// Delete ciphers that were soft-deleted before `cutoff`.
+pub async fn purge_trashed_ciphers(db: &D1Database, cutoff: &str) -> Result<()> {
+    let subquery = "SELECT uuid FROM ciphers WHERE deleted_at IS NOT NULL AND deleted_at <= ?1";
+    for sql in [
+        &format!("DELETE FROM folders_ciphers WHERE cipher_uuid IN ({subquery})"),
+        &format!("DELETE FROM favorites WHERE cipher_uuid IN ({subquery})"),
+        &format!("DELETE FROM ciphers_collections WHERE cipher_uuid IN ({subquery})"),
+        &"DELETE FROM ciphers WHERE deleted_at IS NOT NULL AND deleted_at <= ?1".to_string(),
+    ] {
+        db.prepare(sql)
+            .bind_refs([&D1Type::Text(cutoff)])
+            .map_err(d1_err)?
+            .run()
+            .await
+            .map_err(d1_err)?;
+    }
+    Ok(())
+}
+
 // --- Helpers ---
 
 fn opt_text<'a>(val: &'a Option<String>) -> D1Type<'a> {

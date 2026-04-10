@@ -27,6 +27,12 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["UserNotifier"]
 
+[triggers]
+crons = [
+  "0 */6 * * *",   # Every 6 hours: purge expired sends + send files from R2
+  "0 0 * * *",     # Daily: purge trashed ciphers (soft-deleted 30+ days ago)
+]
+
 [vars]
 DOMAIN = "https://vault.example.com"
 SIGNUPS_ALLOWED = "true"

@@ -15,6 +15,8 @@ use config::RequestContext;
 use middleware::cors;
 use middleware::headers::extract_client_info;
 
+mod jobs;
+
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
