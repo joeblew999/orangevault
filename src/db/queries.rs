@@ -4,7 +4,7 @@ use crate::error::{AppError, Result};
 
 use super::models::{
     Cipher, CipherCollection, Collection, Device, Favorite, Folder, FolderCipher, Membership,
-    Organization, User, UserCollection,
+    Organization, TwoFactor, User, UserCollection,
 };
 
 fn d1_err(e: worker::Error) -> AppError {
@@ -802,6 +802,99 @@ pub async fn share_cipher_to_org(
     .run()
     .await
     .map_err(d1_err)?;
+    Ok(())
+}
+
+// --- Two-factor queries ---
+
+pub async fn find_two_factors_by_user(db: &D1Database, user_uuid: &str) -> Result<Vec<TwoFactor>> {
+    db.prepare("SELECT * FROM two_factor WHERE user_uuid = ?1 AND enabled = 1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<TwoFactor>()
+        .map_err(d1_err)
+}
+
+pub async fn find_two_factor_by_user_and_type(
+    db: &D1Database,
+    user_uuid: &str,
+    atype: i32,
+) -> Result<Option<TwoFactor>> {
+    db.prepare("SELECT * FROM two_factor WHERE user_uuid = ?1 AND atype = ?2")
+        .bind_refs([&D1Type::Text(user_uuid), &D1Type::Integer(atype)])
+        .map_err(d1_err)?
+        .first::<TwoFactor>(None)
+        .await
+        .map_err(d1_err)
+}
+
+pub async fn upsert_two_factor(db: &D1Database, tf: &TwoFactor) -> Result<()> {
+    let last_used = match tf.last_used {
+        Some(t) => D1Type::Real(t as f64),
+        None => D1Type::Null,
+    };
+    db.prepare(
+        "INSERT INTO two_factor (uuid, user_uuid, atype, enabled, data, last_used)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(uuid) DO UPDATE SET enabled = excluded.enabled, data = excluded.data, last_used = excluded.last_used",
+    )
+    .bind_refs([
+        &D1Type::Text(&tf.uuid),
+        &D1Type::Text(&tf.user_uuid),
+        &D1Type::Integer(tf.atype),
+        &D1Type::Boolean(tf.enabled),
+        &D1Type::Text(&tf.data),
+        &last_used,
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn delete_two_factors_for_user(db: &D1Database, user_uuid: &str) -> Result<()> {
+    db.prepare("DELETE FROM two_factor WHERE user_uuid = ?1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn update_user_totp_recover(
+    db: &D1Database,
+    user_uuid: &str,
+    recover: Option<&str>,
+) -> Result<()> {
+    let val = match recover {
+        Some(r) => D1Type::Text(r),
+        None => D1Type::Null,
+    };
+    db.prepare("UPDATE users SET totp_recover = ?1 WHERE uuid = ?2")
+        .bind_refs([&val, &D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn update_two_factor_last_used(
+    db: &D1Database,
+    tf_uuid: &str,
+    timestamp: i64,
+) -> Result<()> {
+    db.prepare("UPDATE two_factor SET last_used = ?1 WHERE uuid = ?2")
+        .bind_refs([&D1Type::Real(timestamp as f64), &D1Type::Text(tf_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
     Ok(())
 }
 

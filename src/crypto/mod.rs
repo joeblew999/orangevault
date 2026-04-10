@@ -2,6 +2,7 @@ pub mod hmac;
 pub mod pbkdf2;
 pub mod random;
 pub mod rsa;
+pub mod totp;
 
 use js_sys::{Object, Reflect};
 use wasm_bindgen::JsValue;

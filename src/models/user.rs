@@ -81,6 +81,12 @@ pub struct TokenRequest {
     #[serde(rename = "deviceName")]
     pub device_name: Option<String>,
     pub refresh_token: Option<String>,
+    #[serde(rename = "twoFactorToken")]
+    pub two_factor_token: Option<String>,
+    #[serde(rename = "twoFactorProvider")]
+    pub two_factor_provider: Option<i32>,
+    #[serde(rename = "twoFactorRemember")]
+    pub two_factor_remember: Option<i32>,
 }
 
 /// Login/refresh token response.
@@ -107,6 +113,8 @@ pub struct LoginResponse {
     pub unofficial_server: bool,
     #[serde(rename = "UserDecryptionOptions")]
     pub user_decryption_options: UserDecryptionOptions,
+    #[serde(rename = "TwoFactorToken", skip_serializing_if = "Option::is_none")]
+    pub two_factor_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

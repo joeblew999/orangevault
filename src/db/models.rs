@@ -142,6 +142,18 @@ pub struct CipherCollection {
     pub collection_uuid: String,
 }
 
+/// Database representation of a two-factor auth provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TwoFactor {
+    pub uuid: String,
+    pub user_uuid: String,
+    pub atype: i32,
+    #[serde(deserialize_with = "de_bool_from_int", default)]
+    pub enabled: bool,
+    pub data: String,
+    pub last_used: Option<i64>,
+}
+
 /// Database representation of a device (matches `devices` table in migration).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {

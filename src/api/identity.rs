@@ -4,12 +4,13 @@ use crate::auth::claims::RefreshClaims;
 use crate::auth::guards::verify_master_password;
 use crate::auth::jwt;
 use crate::config::RequestContext;
+use crate::crypto::totp::{base32_decode, constant_time_eq, validate_totp};
 use crate::crypto::{pbkdf2, random};
 use crate::db::models::{Device, User};
 use crate::db::queries;
 use crate::error::{self, AppError};
 use crate::models::user::{LoginResponse, RegisterRequest, TokenRequest, UserDecryptionOptions};
-use crate::util::{base64_encode, generate_uuid, now_utc};
+use crate::util::{base64_encode, generate_uuid, now_epoch_secs, now_utc};
 
 pub async fn register(
     mut req: Request,
@@ -125,6 +126,52 @@ async fn handle_password_grant(
         return Err(oauth_invalid_grant("invalid_username_or_password"));
     }
 
+    let two_factors = queries::find_two_factors_by_user(db, &user.uuid).await?;
+    if !two_factors.is_empty() {
+        match (form.two_factor_provider, form.two_factor_token.as_deref()) {
+            (Some(provider), Some(token)) => {
+                match provider {
+                    0 => {
+                        let tf = two_factors
+                            .iter()
+                            .find(|t| t.atype == 0)
+                            .ok_or_else(|| oauth_invalid_grant("TOTP not configured"))?;
+                        let secret = base32_decode(&tf.data)?;
+                        let now = now_epoch_secs() as u64;
+                        let valid = validate_totp(&secret, token, now).await?;
+                        if !valid {
+                            return Err(oauth_invalid_grant("Invalid TOTP code"));
+                        }
+                        queries::update_two_factor_last_used(db, &tf.uuid, now as i64).await?;
+                    }
+                    8 => {
+                        // Recovery code
+                        let stored = user.totp_recover.as_deref().unwrap_or("");
+                        let token_norm = token.replace(' ', "").to_uppercase();
+                        let stored_norm = stored.replace(' ', "").to_uppercase();
+                        if !constant_time_eq(token_norm.as_bytes(), stored_norm.as_bytes()) {
+                            return Err(oauth_invalid_grant("Invalid recovery code"));
+                        }
+                        queries::delete_two_factors_for_user(db, &user.uuid).await?;
+                        queries::update_user_totp_recover(db, &user.uuid, None).await?;
+                    }
+                    _ => {
+                        return Err(oauth_invalid_grant("Unsupported 2FA provider"));
+                    }
+                }
+            }
+            _ => {
+                let providers: Vec<i32> = two_factors.iter().map(|t| t.atype).collect();
+                return Err(AppError::OAuth {
+                    error: "invalid_grant".into(),
+                    error_description: "Two factor required.".into(),
+                    status: 400,
+                    two_factor_providers: Some(providers),
+                });
+            }
+        }
+    }
+
     // Create or update device
     let device_uuid = form
         .device_identifier
@@ -213,6 +260,7 @@ fn build_login_response(access_token: String, refresh_token: String, user: &User
         user_decryption_options: UserDecryptionOptions {
             has_master_password: true,
         },
+        two_factor_token: None,
     }
 }
 

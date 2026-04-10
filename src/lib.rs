@@ -55,6 +55,21 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/api/ciphers/purge", api::ciphers::purge_ciphers)
         .put_async("/api/ciphers/:id/share", api::organizations::share_cipher)
         .post_async("/api/ciphers/:id/share", api::organizations::share_cipher)
+        // Phase 4: Two-Factor Auth
+        .get_async("/api/two-factor", api::two_factor::get_two_factor)
+        .post_async(
+            "/api/two-factor/get-authenticator",
+            api::two_factor::get_authenticator,
+        )
+        .post_async(
+            "/api/two-factor/authenticator",
+            api::two_factor::post_authenticator,
+        )
+        .put_async(
+            "/api/two-factor/authenticator",
+            api::two_factor::post_authenticator,
+        )
+        .post_async("/api/two-factor/get-recover", api::two_factor::get_recover)
         // Phase 3: Organizations
         .post_async("/api/organizations", api::organizations::post_organization)
         .get_async(
