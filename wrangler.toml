@@ -1,0 +1,24 @@
+name = "orangevault"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-04-01"
+
+[build]
+command = "cargo install -q worker-build@^0.7 && worker-build --release"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "orangevault"
+database_id = "placeholder"
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "orangevault-files"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "placeholder"
+
+[vars]
+DOMAIN = "https://vault.example.com"
+SIGNUPS_ALLOWED = "true"
+WEB_VAULT_ENABLED = "true"

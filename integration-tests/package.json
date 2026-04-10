@@ -1,0 +1,18 @@
+{
+  "name": "orangevault-integration-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:worker": "cd .. && cargo install -q worker-build@^0.7 && worker-build --release",
+    "pretest": "npm run build:worker",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:no-build": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "miniflare": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
