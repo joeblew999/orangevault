@@ -84,3 +84,43 @@ export function generateTestUser(prefix: string = "test") {
     masterPasswordHash: "dGVzdA==", // placeholder base64
   };
 }
+
+export async function registerUser(user: {
+  name: string;
+  email: string;
+  masterPasswordHash: string;
+}) {
+  return workerFetch("/identity/accounts/register", {
+    method: "POST",
+    body: {
+      name: user.name,
+      email: user.email,
+      masterPasswordHash: user.masterPasswordHash,
+      key: "encrypted-key-placeholder",
+      kdf: 0,
+      kdfIterations: 600000,
+      keys: {
+        publicKey: "public-key-placeholder",
+        encryptedPrivateKey: "encrypted-private-key-placeholder",
+      },
+    },
+  });
+}
+
+export async function loginUser(email: string, masterPasswordHash: string) {
+  const body = new URLSearchParams({
+    grant_type: "password",
+    username: email,
+    password: masterPasswordHash,
+    scope: "api offline_access",
+    client_id: "web",
+    deviceType: "10",
+    deviceIdentifier: "test-device-id",
+    deviceName: "Test Browser",
+  });
+  return mf.dispatchFetch(`${mfUrl}/identity/connect/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+}

@@ -10,6 +10,10 @@ pub fn now_utc() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+pub fn now_epoch_secs() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
 /// URL-safe base64 with no padding (for JWT).
 pub fn base64url_encode(data: &[u8]) -> String {
     use base64::Engine;

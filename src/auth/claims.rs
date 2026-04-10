@@ -46,8 +46,10 @@ pub struct RefreshClaims {
     pub iss: String,
     pub sub: String,
     pub r#type: String,
-    /// Token identifier for revocation
+    /// Device UUID (links refresh token to device)
     pub token: String,
+    /// Unique token ID (ensures each refresh token is distinct)
+    pub jti: String,
 }
 
 /// Claims for invite tokens.

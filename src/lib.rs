@@ -32,7 +32,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         // Health checks
         .get("/alive", |_, _| Response::ok(""))
         .get("/api/alive", |_, _| Response::ok(""))
-        // All other routes will be added in subsequent phases
+        // Phase 1: Auth / Identity
+        .get_async("/api/config", api::accounts::get_config)
+        .post_async("/accounts/prelogin", api::accounts::prelogin)
+        .post_async("/identity/accounts/register", api::identity::register)
+        .post_async("/identity/connect/token", api::identity::connect_token)
         .run(req, env)
         .await;
 

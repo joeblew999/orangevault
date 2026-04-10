@@ -74,6 +74,26 @@ async fn import_key_jwk(jwk_json: &str, usages: &[&str]) -> Result<web_sys::Cryp
     Ok(result.into())
 }
 
+pub async fn rsa_verify(
+    public_key: &web_sys::CryptoKey,
+    data: &[u8],
+    signature: &[u8],
+) -> Result<bool> {
+    let subtle = subtle_crypto()?;
+    let algo = rsa_algo()?;
+    let data_arr = Uint8Array::from(data);
+    let sig_arr = Uint8Array::from(signature);
+    let promise = subtle
+        .verify_with_object_and_buffer_source_and_buffer_source(
+            &algo, public_key, &sig_arr, &data_arr,
+        )
+        .map_err(|e| AppError::Internal(format!("RSA verify failed: {e:?}")))?;
+    let result = JsFuture::from(promise)
+        .await
+        .map_err(|e| AppError::Internal(format!("RSA verify await failed: {e:?}")))?;
+    Ok(result.as_bool().unwrap_or(false))
+}
+
 pub async fn rsa_sign(private_key: &web_sys::CryptoKey, data: &[u8]) -> Result<Vec<u8>> {
     let subtle = subtle_crypto()?;
     let data_arr = Uint8Array::from(data);

@@ -133,6 +133,21 @@ fn api_error_json(message: &str) -> ApiErrorResponse {
     }
 }
 
+/// Convert an AppError-based Result into a worker::Result<Response>,
+/// rendering errors as proper HTTP error responses.
+pub fn into_response(result: Result<Response>) -> worker::Result<Response> {
+    match result {
+        Ok(resp) => Ok(resp),
+        Err(e) => e.to_response(),
+    }
+}
+
+impl From<worker::Error> for AppError {
+    fn from(e: worker::Error) -> Self {
+        AppError::Internal(format!("Worker error: {e}"))
+    }
+}
+
 impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
