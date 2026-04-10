@@ -53,6 +53,34 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .put_async("/api/ciphers/:id/delete", api::ciphers::soft_delete_cipher)
         .put_async("/api/ciphers/:id/restore", api::ciphers::restore_cipher)
         .post_async("/api/ciphers/purge", api::ciphers::purge_ciphers)
+        .put_async("/api/ciphers/:id/share", api::organizations::share_cipher)
+        .post_async("/api/ciphers/:id/share", api::organizations::share_cipher)
+        // Phase 3: Organizations
+        .post_async("/api/organizations", api::organizations::post_organization)
+        .get_async(
+            "/api/organizations/:org_id",
+            api::organizations::get_organization,
+        )
+        .delete_async(
+            "/api/organizations/:org_id",
+            api::organizations::delete_organization,
+        )
+        .get_async(
+            "/api/organizations/:org_id/collections",
+            api::organizations::get_collections,
+        )
+        .post_async(
+            "/api/organizations/:org_id/collections",
+            api::organizations::post_collection,
+        )
+        .delete_async(
+            "/api/organizations/:org_id/collections/:col_id",
+            api::organizations::delete_collection,
+        )
+        .get_async(
+            "/api/organizations/:org_id/users",
+            api::organizations::get_members,
+        )
         .run(req, env)
         .await;
 

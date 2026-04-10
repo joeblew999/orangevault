@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::db::models::{Cipher, Favorite, FolderCipher};
+use crate::db::models::{Cipher, CipherCollection, Favorite, FolderCipher};
 
 /// API response for a cipher.
 #[derive(Debug, Serialize)]
@@ -34,12 +34,13 @@ pub struct CipherResponse {
 }
 
 impl CipherResponse {
-    /// Build a CipherResponse from a DB Cipher row, resolving favorite/folder from lists.
+    /// Build a CipherResponse from a DB Cipher row, resolving favorite/folder/collections from lists.
     pub fn from_cipher(
         c: &Cipher,
         user_uuid: &str,
         favorites: &[Favorite],
         folder_ciphers: &[FolderCipher],
+        cipher_collections: &[CipherCollection],
     ) -> Self {
         let is_fav = favorites
             .iter()
@@ -48,11 +49,21 @@ impl CipherResponse {
             .iter()
             .find(|fc| fc.cipher_uuid == c.uuid)
             .map(|fc| fc.folder_uuid.clone());
-        Self::from_cipher_resolved(c, is_fav, folder_id)
+        let col_ids: Vec<String> = cipher_collections
+            .iter()
+            .filter(|cc| cc.cipher_uuid == c.uuid)
+            .map(|cc| cc.collection_uuid.clone())
+            .collect();
+        Self::from_cipher_resolved(c, is_fav, folder_id, col_ids)
     }
 
-    /// Build a CipherResponse when favorite/folder status is already known.
-    pub fn from_cipher_resolved(c: &Cipher, is_favorite: bool, folder_id: Option<String>) -> Self {
+    /// Build a CipherResponse when favorite/folder/collection status is already known.
+    pub fn from_cipher_resolved(
+        c: &Cipher,
+        is_favorite: bool,
+        folder_id: Option<String>,
+        collection_ids: Vec<String>,
+    ) -> Self {
         let data: serde_json::Value =
             serde_json::from_str(&c.data).unwrap_or(serde_json::Value::Null);
         let (login, card, identity, secure_note) = match c.atype {
@@ -87,7 +98,7 @@ impl CipherResponse {
                 .password_history
                 .as_ref()
                 .and_then(|p| serde_json::from_str(p).ok()),
-            collection_ids: vec![],
+            collection_ids,
             creation_date: c.created_at.clone(),
             deleted_date: c.deleted_at.clone(),
             object: "cipherDetails".into(),
@@ -100,6 +111,7 @@ impl CipherResponse {
 #[serde(rename_all = "camelCase")]
 pub struct CipherRequest {
     pub r#type: i32,
+    pub organization_id: Option<String>,
     pub name: String,
     pub notes: Option<String>,
     pub fields: Option<serde_json::Value>,

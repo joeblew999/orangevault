@@ -88,6 +88,60 @@ pub struct FolderCipher {
     pub folder_uuid: String,
 }
 
+/// Database representation of an organization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Organization {
+    pub uuid: String,
+    pub name: String,
+    pub billing_email: String,
+    pub private_key: Option<String>,
+    pub public_key: Option<String>,
+}
+
+/// Database representation of an org membership.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Membership {
+    pub uuid: String,
+    pub user_uuid: String,
+    pub org_uuid: String,
+    pub akey: Option<String>,
+    pub atype: i32,
+    pub status: i32,
+    #[serde(deserialize_with = "de_bool_from_int", default)]
+    pub access_all: bool,
+    pub external_id: Option<String>,
+    pub reset_password_key: Option<String>,
+}
+
+/// Database representation of a collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Collection {
+    pub uuid: String,
+    pub org_uuid: String,
+    pub name: String,
+    pub external_id: Option<String>,
+}
+
+/// Row from `users_collections`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserCollection {
+    pub user_uuid: String,
+    pub collection_uuid: String,
+    #[serde(deserialize_with = "de_bool_from_int", default)]
+    pub read_only: bool,
+    #[serde(deserialize_with = "de_bool_from_int", default)]
+    pub hide_passwords: bool,
+    #[serde(deserialize_with = "de_bool_from_int", default)]
+    pub manage: bool,
+}
+
+/// Row from `ciphers_collections`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CipherCollection {
+    pub cipher_uuid: String,
+    pub collection_uuid: String,
+}
+
 /// Database representation of a device (matches `devices` table in migration).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {

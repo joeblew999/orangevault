@@ -8,8 +8,10 @@ use crate::error::{self, AppError};
 use crate::models::cipher::{CipherRequest, CipherResponse};
 use crate::util::{generate_uuid, now_utc};
 
-/// Fetch a cipher by route param "id" and verify it belongs to the given user.
-async fn fetch_owned_cipher(
+/// Fetch a cipher by route param "id" and verify the user has access.
+/// Access is granted if the cipher belongs to the user directly, or if the
+/// cipher belongs to an org the user is a confirmed member of.
+async fn fetch_accessible_cipher(
     ctx: &RouteContext<RequestContext>,
     user_uuid: &str,
 ) -> crate::error::Result<Cipher> {
@@ -21,10 +23,19 @@ async fn fetch_owned_cipher(
     let cipher = queries::find_cipher_by_uuid(&db, &cipher_id)
         .await?
         .ok_or(AppError::NotFound("Cipher not found".into()))?;
-    if cipher.user_uuid.as_deref() != Some(user_uuid) {
-        return Err(AppError::Forbidden("Not your cipher".into()));
+
+    if cipher.user_uuid.as_deref() == Some(user_uuid) {
+        return Ok(cipher);
     }
-    Ok(cipher)
+
+    if let Some(ref org_uuid) = cipher.organization_uuid
+        && let Some(m) = queries::find_membership(&db, user_uuid, org_uuid).await?
+        && m.status == 2
+    {
+        return Ok(cipher);
+    }
+
+    Err(AppError::Forbidden("Not your cipher".into()))
 }
 
 pub async fn get_ciphers(
@@ -41,7 +52,9 @@ pub async fn get_ciphers(
 
             let data: Vec<CipherResponse> = ciphers
                 .iter()
-                .map(|c| CipherResponse::from_cipher(c, &user.uuid, &favorites, &folder_ciphers))
+                .map(|c| {
+                    CipherResponse::from_cipher(c, &user.uuid, &favorites, &folder_ciphers, &[])
+                })
                 .collect();
 
             Ok(Response::from_json(&serde_json::json!({
@@ -61,12 +74,18 @@ pub async fn get_cipher(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_owned_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
             let db = ctx.data.db()?;
             let favorites = queries::find_favorites_by_user(&db, &user.uuid).await?;
             let folder_ciphers = queries::find_folder_ciphers_by_user(&db, &user.uuid).await?;
-            let resp =
-                CipherResponse::from_cipher(&cipher, &user.uuid, &favorites, &folder_ciphers);
+            let cipher_collections = queries::find_cipher_collections(&db, &cipher.uuid).await?;
+            let resp = CipherResponse::from_cipher(
+                &cipher,
+                &user.uuid,
+                &favorites,
+                &folder_ciphers,
+                &cipher_collections,
+            );
             Ok(Response::from_json(&resp)?)
         }
         .await,
@@ -117,8 +136,12 @@ pub async fn post_cipher(
                 queries::set_favorite(&db, &user.uuid, &cipher.uuid).await?;
             }
 
-            let resp =
-                CipherResponse::from_cipher_resolved(&cipher, is_fav, body.folder_id.clone());
+            let resp = CipherResponse::from_cipher_resolved(
+                &cipher,
+                is_fav,
+                body.folder_id.clone(),
+                vec![],
+            );
             Ok(Response::from_json(&resp)?)
         }
         .await,
@@ -132,7 +155,7 @@ pub async fn put_cipher(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let mut cipher = fetch_owned_cipher(&ctx, &user.uuid).await?;
+            let mut cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
             let body: CipherRequest = req
                 .json()
                 .await
@@ -162,8 +185,17 @@ pub async fn put_cipher(
                 queries::unset_favorite(&db, &user.uuid, &cipher.uuid).await?;
             }
 
-            let resp =
-                CipherResponse::from_cipher_resolved(&cipher, is_fav, body.folder_id.clone());
+            let cipher_collections = queries::find_cipher_collections(&db, &cipher.uuid).await?;
+            let col_ids: Vec<String> = cipher_collections
+                .into_iter()
+                .map(|cc| cc.collection_uuid)
+                .collect();
+            let resp = CipherResponse::from_cipher_resolved(
+                &cipher,
+                is_fav,
+                body.folder_id.clone(),
+                col_ids,
+            );
             Ok(Response::from_json(&resp)?)
         }
         .await,
@@ -177,7 +209,7 @@ pub async fn delete_cipher(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_owned_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
             let db = ctx.data.db()?;
             queries::hard_delete_cipher(&db, &cipher.uuid).await?;
             Ok(Response::empty()?.with_status(200))
@@ -193,7 +225,7 @@ pub async fn soft_delete_cipher(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_owned_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
             let db = ctx.data.db()?;
             queries::soft_delete_cipher(&db, &cipher.uuid, &now_utc()).await?;
             Ok(Response::empty()?.with_status(200))
@@ -209,7 +241,7 @@ pub async fn restore_cipher(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_owned_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
             let db = ctx.data.db()?;
             queries::restore_cipher(&db, &cipher.uuid, &now_utc()).await?;
             Ok(Response::empty()?.with_status(200))

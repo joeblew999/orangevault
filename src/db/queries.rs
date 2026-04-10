@@ -2,7 +2,10 @@ use worker::d1::{D1Database, D1Type};
 
 use crate::error::{AppError, Result};
 
-use super::models::{Cipher, Device, Favorite, Folder, FolderCipher, User};
+use super::models::{
+    Cipher, CipherCollection, Collection, Device, Favorite, Folder, FolderCipher, Membership,
+    Organization, User, UserCollection,
+};
 
 fn d1_err(e: worker::Error) -> AppError {
     AppError::Internal(format!("D1 error: {e}"))
@@ -449,6 +452,356 @@ pub async fn clear_folder_for_cipher(db: &D1Database, cipher_uuid: &str) -> Resu
         .run()
         .await
         .map_err(d1_err)?;
+    Ok(())
+}
+
+// --- Organization queries ---
+
+pub async fn insert_organization(db: &D1Database, org: &Organization) -> Result<()> {
+    let priv_key = opt_text(&org.private_key);
+    let pub_key = opt_text(&org.public_key);
+    db.prepare(
+        "INSERT INTO organizations (uuid, name, billing_email, private_key, public_key)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind_refs([
+        &D1Type::Text(&org.uuid),
+        &D1Type::Text(&org.name),
+        &D1Type::Text(&org.billing_email),
+        &priv_key,
+        &pub_key,
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn find_organization_by_uuid(
+    db: &D1Database,
+    uuid: &str,
+) -> Result<Option<Organization>> {
+    db.prepare("SELECT * FROM organizations WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .first::<Organization>(None)
+        .await
+        .map_err(d1_err)
+}
+
+pub async fn delete_organization(db: &D1Database, uuid: &str) -> Result<()> {
+    // Delete in dependency order
+    for sql in [
+        "DELETE FROM ciphers_collections WHERE collection_uuid IN (SELECT uuid FROM collections WHERE org_uuid = ?1)",
+        "DELETE FROM users_collections WHERE collection_uuid IN (SELECT uuid FROM collections WHERE org_uuid = ?1)",
+        "DELETE FROM collections WHERE org_uuid = ?1",
+        "DELETE FROM org_policies WHERE org_uuid = ?1",
+        "DELETE FROM memberships WHERE org_uuid = ?1",
+        "DELETE FROM ciphers WHERE organization_uuid = ?1",
+        "DELETE FROM organizations WHERE uuid = ?1",
+    ] {
+        db.prepare(sql)
+            .bind_refs([&D1Type::Text(uuid)])
+            .map_err(d1_err)?
+            .run()
+            .await
+            .map_err(d1_err)?;
+    }
+    Ok(())
+}
+
+// --- Membership queries ---
+
+pub async fn insert_membership(db: &D1Database, m: &Membership) -> Result<()> {
+    let akey = opt_text(&m.akey);
+    let ext_id = opt_text(&m.external_id);
+    let rpk = opt_text(&m.reset_password_key);
+    db.prepare(
+        "INSERT INTO memberships (uuid, user_uuid, org_uuid, akey, atype, status,
+         access_all, external_id, reset_password_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )
+    .bind_refs([
+        &D1Type::Text(&m.uuid),
+        &D1Type::Text(&m.user_uuid),
+        &D1Type::Text(&m.org_uuid),
+        &akey,
+        &D1Type::Integer(m.atype),
+        &D1Type::Integer(m.status),
+        &D1Type::Boolean(m.access_all),
+        &ext_id,
+        &rpk,
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn find_memberships_by_user(db: &D1Database, user_uuid: &str) -> Result<Vec<Membership>> {
+    db.prepare("SELECT * FROM memberships WHERE user_uuid = ?1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<Membership>()
+        .map_err(d1_err)
+}
+
+pub async fn find_memberships_by_org(db: &D1Database, org_uuid: &str) -> Result<Vec<Membership>> {
+    db.prepare("SELECT * FROM memberships WHERE org_uuid = ?1")
+        .bind_refs([&D1Type::Text(org_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<Membership>()
+        .map_err(d1_err)
+}
+
+pub async fn find_membership(
+    db: &D1Database,
+    user_uuid: &str,
+    org_uuid: &str,
+) -> Result<Option<Membership>> {
+    db.prepare("SELECT * FROM memberships WHERE user_uuid = ?1 AND org_uuid = ?2")
+        .bind_refs([&D1Type::Text(user_uuid), &D1Type::Text(org_uuid)])
+        .map_err(d1_err)?
+        .first::<Membership>(None)
+        .await
+        .map_err(d1_err)
+}
+
+pub async fn update_membership_status_and_key(
+    db: &D1Database,
+    membership_uuid: &str,
+    status: i32,
+    akey: Option<&str>,
+) -> Result<()> {
+    let key_val = match akey {
+        Some(k) => D1Type::Text(k),
+        None => D1Type::Null,
+    };
+    db.prepare("UPDATE memberships SET status = ?1, akey = ?2 WHERE uuid = ?3")
+        .bind_refs([
+            &D1Type::Integer(status),
+            &key_val,
+            &D1Type::Text(membership_uuid),
+        ])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+// --- Collection queries ---
+
+pub async fn insert_collection(db: &D1Database, c: &Collection) -> Result<()> {
+    let ext_id = opt_text(&c.external_id);
+    db.prepare(
+        "INSERT INTO collections (uuid, org_uuid, name, external_id)
+         VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind_refs([
+        &D1Type::Text(&c.uuid),
+        &D1Type::Text(&c.org_uuid),
+        &D1Type::Text(&c.name),
+        &ext_id,
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn find_collections_by_org(db: &D1Database, org_uuid: &str) -> Result<Vec<Collection>> {
+    db.prepare("SELECT * FROM collections WHERE org_uuid = ?1")
+        .bind_refs([&D1Type::Text(org_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<Collection>()
+        .map_err(d1_err)
+}
+
+pub async fn find_collection_by_uuid(db: &D1Database, uuid: &str) -> Result<Option<Collection>> {
+    db.prepare("SELECT * FROM collections WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .first::<Collection>(None)
+        .await
+        .map_err(d1_err)
+}
+
+pub async fn delete_collection(db: &D1Database, uuid: &str) -> Result<()> {
+    db.prepare("DELETE FROM ciphers_collections WHERE collection_uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    db.prepare("DELETE FROM users_collections WHERE collection_uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    db.prepare("DELETE FROM collections WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn set_user_collection(
+    db: &D1Database,
+    user_uuid: &str,
+    collection_uuid: &str,
+    read_only: bool,
+    hide_passwords: bool,
+    manage: bool,
+) -> Result<()> {
+    db.prepare(
+        "INSERT OR REPLACE INTO users_collections (user_uuid, collection_uuid, read_only, hide_passwords, manage)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind_refs([
+        &D1Type::Text(user_uuid),
+        &D1Type::Text(collection_uuid),
+        &D1Type::Boolean(read_only),
+        &D1Type::Boolean(hide_passwords),
+        &D1Type::Boolean(manage),
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn find_user_collections_by_user(
+    db: &D1Database,
+    user_uuid: &str,
+) -> Result<Vec<UserCollection>> {
+    db.prepare("SELECT * FROM users_collections WHERE user_uuid = ?1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<UserCollection>()
+        .map_err(d1_err)
+}
+
+// --- Cipher-collection queries ---
+
+pub async fn set_cipher_collection(
+    db: &D1Database,
+    cipher_uuid: &str,
+    collection_uuid: &str,
+) -> Result<()> {
+    db.prepare(
+        "INSERT OR IGNORE INTO ciphers_collections (cipher_uuid, collection_uuid)
+         VALUES (?1, ?2)",
+    )
+    .bind_refs([&D1Type::Text(cipher_uuid), &D1Type::Text(collection_uuid)])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn clear_cipher_collections(db: &D1Database, cipher_uuid: &str) -> Result<()> {
+    db.prepare("DELETE FROM ciphers_collections WHERE cipher_uuid = ?1")
+        .bind_refs([&D1Type::Text(cipher_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn find_cipher_collections(
+    db: &D1Database,
+    cipher_uuid: &str,
+) -> Result<Vec<CipherCollection>> {
+    db.prepare("SELECT * FROM ciphers_collections WHERE cipher_uuid = ?1")
+        .bind_refs([&D1Type::Text(cipher_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<CipherCollection>()
+        .map_err(d1_err)
+}
+
+pub async fn find_org_ciphers(db: &D1Database, org_uuid: &str) -> Result<Vec<Cipher>> {
+    db.prepare("SELECT * FROM ciphers WHERE organization_uuid = ?1")
+        .bind_refs([&D1Type::Text(org_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<Cipher>()
+        .map_err(d1_err)
+}
+
+pub async fn find_cipher_collections_by_org(
+    db: &D1Database,
+    org_uuid: &str,
+) -> Result<Vec<CipherCollection>> {
+    db.prepare(
+        "SELECT cc.* FROM ciphers_collections cc
+         INNER JOIN collections c ON cc.collection_uuid = c.uuid
+         WHERE c.org_uuid = ?1",
+    )
+    .bind_refs([&D1Type::Text(org_uuid)])
+    .map_err(d1_err)?
+    .all()
+    .await
+    .map_err(d1_err)?
+    .results::<CipherCollection>()
+    .map_err(d1_err)
+}
+
+pub async fn share_cipher_to_org(
+    db: &D1Database,
+    cipher_uuid: &str,
+    org_uuid: &str,
+    data: &str,
+    name: &str,
+    key: Option<&str>,
+    now: &str,
+) -> Result<()> {
+    let key_val = match key {
+        Some(k) => D1Type::Text(k),
+        None => D1Type::Null,
+    };
+    db.prepare(
+        "UPDATE ciphers SET user_uuid = NULL, organization_uuid = ?1,
+         data = ?2, name = ?3, akey = ?4, updated_at = ?5 WHERE uuid = ?6",
+    )
+    .bind_refs([
+        &D1Type::Text(org_uuid),
+        &D1Type::Text(data),
+        &D1Type::Text(name),
+        &key_val,
+        &D1Type::Text(now),
+        &D1Type::Text(cipher_uuid),
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
     Ok(())
 }
 

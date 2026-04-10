@@ -2,6 +2,7 @@ use serde::Serialize;
 
 use super::cipher::CipherResponse;
 use super::folder::FolderResponse;
+use super::organization::CollectionDetailsResponse;
 use super::user::ProfileResponse;
 
 #[derive(Debug, Serialize)]
@@ -10,7 +11,7 @@ pub struct SyncResponse {
     pub profile: ProfileResponse,
     pub ciphers: Vec<CipherResponse>,
     pub folders: Vec<FolderResponse>,
-    pub collections: Vec<serde_json::Value>,
+    pub collections: Vec<CollectionDetailsResponse>,
     pub policies: Vec<serde_json::Value>,
     pub sends: Vec<serde_json::Value>,
     pub domains: DomainsResponse,

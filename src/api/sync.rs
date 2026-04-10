@@ -6,6 +6,7 @@ use crate::db::queries;
 use crate::error;
 use crate::models::cipher::CipherResponse;
 use crate::models::folder::FolderResponse;
+use crate::models::organization::{CollectionDetailsResponse, ProfileOrganizationResponse};
 use crate::models::sync::{DomainsResponse, GlobalDomain, SyncResponse};
 use crate::models::user::ProfileResponse;
 
@@ -19,10 +20,58 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
                 .await?
                 .ok_or(crate::error::AppError::NotFound("User not found".into()))?;
 
-            let ciphers = queries::find_ciphers_by_user(&db, &user.uuid).await?;
+            // Personal ciphers, folders, favorites, folder-cipher links
+            let mut ciphers = queries::find_ciphers_by_user(&db, &user.uuid).await?;
             let folders = queries::find_folders_by_user(&db, &user.uuid).await?;
             let favorites = queries::find_favorites_by_user(&db, &user.uuid).await?;
             let folder_ciphers = queries::find_folder_ciphers_by_user(&db, &user.uuid).await?;
+
+            let memberships = queries::find_memberships_by_user(&db, &user.uuid).await?;
+            let confirmed: Vec<_> = memberships.iter().filter(|m| m.status == 2).collect();
+            let user_collections = queries::find_user_collections_by_user(&db, &user.uuid).await?;
+
+            let mut profile_orgs = Vec::new();
+            let mut collections_resp = Vec::new();
+            let mut all_cipher_collections = Vec::new();
+
+            for m in &confirmed {
+                if let Some(org) = queries::find_organization_by_uuid(&db, &m.org_uuid).await? {
+                    profile_orgs.push(ProfileOrganizationResponse::from_membership(&org, m));
+
+                    let org_ciphers = queries::find_org_ciphers(&db, &m.org_uuid).await?;
+                    ciphers.extend(org_ciphers);
+
+                    let org_cipher_collections =
+                        queries::find_cipher_collections_by_org(&db, &m.org_uuid).await?;
+                    all_cipher_collections.extend(org_cipher_collections);
+
+                    let org_collections =
+                        queries::find_collections_by_org(&db, &m.org_uuid).await?;
+
+                    for col in &org_collections {
+                        let uc = user_collections
+                            .iter()
+                            .find(|uc| uc.collection_uuid == col.uuid);
+                        if m.access_all || uc.is_some() {
+                            collections_resp.push(CollectionDetailsResponse {
+                                id: col.uuid.clone(),
+                                organization_id: col.org_uuid.clone(),
+                                name: col.name.clone(),
+                                external_id: col.external_id.clone(),
+                                read_only: uc.map(|u| u.read_only).unwrap_or(false),
+                                hide_passwords: uc.map(|u| u.hide_passwords).unwrap_or(false),
+                                manage: uc.map(|u| u.manage).unwrap_or(m.access_all),
+                                object: "collectionDetails".into(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            let profile_orgs_json: Vec<serde_json::Value> = profile_orgs
+                .iter()
+                .map(|o| serde_json::to_value(o).unwrap_or_default())
+                .collect();
 
             let profile = ProfileResponse {
                 id: db_user.uuid.clone(),
@@ -36,7 +85,7 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
                 key: db_user.akey.clone().unwrap_or_default(),
                 private_key: db_user.private_key.clone(),
                 security_stamp: db_user.security_stamp.clone(),
-                organizations: vec![],
+                organizations: profile_orgs_json,
                 providers: vec![],
                 force_password_reset: false,
                 avatar_color: db_user.avatar_color.clone(),
@@ -45,7 +94,15 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
 
             let cipher_responses: Vec<CipherResponse> = ciphers
                 .iter()
-                .map(|c| CipherResponse::from_cipher(c, &user.uuid, &favorites, &folder_ciphers))
+                .map(|c| {
+                    CipherResponse::from_cipher(
+                        c,
+                        &user.uuid,
+                        &favorites,
+                        &folder_ciphers,
+                        &all_cipher_collections,
+                    )
+                })
                 .collect();
 
             let folder_responses: Vec<FolderResponse> =
@@ -61,7 +118,7 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
                 profile,
                 ciphers: cipher_responses,
                 folders: folder_responses,
-                collections: vec![],
+                collections: collections_resp,
                 policies: vec![],
                 sends: vec![],
                 domains,
@@ -74,42 +131,41 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
     )
 }
 
-/// Default global equivalent domain groups (subset from Bitwarden).
 fn default_global_domains() -> Vec<GlobalDomain> {
     vec![
         GlobalDomain {
             r#type: 0,
-            domains: vec!["google.com", "youtube.com", "gmail.com", "googlemail.com"]
-                .into_iter()
-                .map(String::from)
+            domains: ["google.com", "youtube.com", "gmail.com", "googlemail.com"]
+                .iter()
+                .map(|s| s.to_string())
                 .collect(),
             excluded: false,
         },
         GlobalDomain {
             r#type: 1,
-            domains: vec!["apple.com", "icloud.com", "me.com"]
-                .into_iter()
-                .map(String::from)
+            domains: ["apple.com", "icloud.com", "me.com"]
+                .iter()
+                .map(|s| s.to_string())
                 .collect(),
             excluded: false,
         },
         GlobalDomain {
             r#type: 2,
-            domains: vec![
+            domains: [
                 "live.com",
                 "microsoft.com",
                 "microsoftonline.com",
                 "outlook.com",
                 "hotmail.com",
             ]
-            .into_iter()
-            .map(String::from)
+            .iter()
+            .map(|s| s.to_string())
             .collect(),
             excluded: false,
         },
         GlobalDomain {
             r#type: 3,
-            domains: vec![
+            domains: [
                 "amazon.com",
                 "amazon.co.uk",
                 "amazon.ca",
@@ -117,8 +173,8 @@ fn default_global_domains() -> Vec<GlobalDomain> {
                 "amazon.in",
                 "amazon.co.jp",
             ]
-            .into_iter()
-            .map(String::from)
+            .iter()
+            .map(|s| s.to_string())
             .collect(),
             excluded: false,
         },
