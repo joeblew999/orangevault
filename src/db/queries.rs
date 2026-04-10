@@ -2,7 +2,7 @@ use worker::d1::{D1Database, D1Type};
 
 use crate::error::{AppError, Result};
 
-use super::models::{Device, User};
+use super::models::{Cipher, Device, Favorite, Folder, FolderCipher, User};
 
 fn d1_err(e: worker::Error) -> AppError {
     AppError::Internal(format!("D1 error: {e}"))
@@ -138,6 +138,313 @@ pub async fn update_device_refresh_token(
             &D1Type::Text(now),
             &D1Type::Text(device_uuid),
         ])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+// --- Cipher queries ---
+
+pub async fn find_ciphers_by_user(db: &D1Database, user_uuid: &str) -> Result<Vec<Cipher>> {
+    db.prepare("SELECT * FROM ciphers WHERE user_uuid = ?1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<Cipher>()
+        .map_err(d1_err)
+}
+
+pub async fn find_cipher_by_uuid(db: &D1Database, uuid: &str) -> Result<Option<Cipher>> {
+    db.prepare("SELECT * FROM ciphers WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .first::<Cipher>(None)
+        .await
+        .map_err(d1_err)
+}
+
+pub async fn insert_cipher(db: &D1Database, c: &Cipher) -> Result<()> {
+    let notes = opt_text(&c.notes);
+    let fields = opt_text(&c.fields);
+    let key = opt_text(&c.key);
+    let pw_hist = opt_text(&c.password_history);
+    let reprompt = opt_int(c.reprompt);
+    let deleted = opt_text(&c.deleted_at);
+    let user = opt_text(&c.user_uuid);
+    let org = opt_text(&c.organization_uuid);
+
+    db.prepare(
+        "INSERT INTO ciphers (uuid, user_uuid, organization_uuid, atype, name, notes,
+         fields, data, akey, password_history, reprompt, deleted_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+    )
+    .bind_refs([
+        &D1Type::Text(&c.uuid),
+        &user,
+        &org,
+        &D1Type::Integer(c.atype),
+        &D1Type::Text(&c.name),
+        &notes,
+        &fields,
+        &D1Type::Text(&c.data),
+        &key,
+        &pw_hist,
+        &reprompt,
+        &deleted,
+        &D1Type::Text(&c.created_at),
+        &D1Type::Text(&c.updated_at),
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn update_cipher(db: &D1Database, c: &Cipher) -> Result<()> {
+    let notes = opt_text(&c.notes);
+    let fields = opt_text(&c.fields);
+    let key = opt_text(&c.key);
+    let pw_hist = opt_text(&c.password_history);
+    let reprompt = opt_int(c.reprompt);
+
+    db.prepare(
+        "UPDATE ciphers SET name = ?1, notes = ?2, fields = ?3, data = ?4,
+         akey = ?5, password_history = ?6, reprompt = ?7, updated_at = ?8
+         WHERE uuid = ?9",
+    )
+    .bind_refs([
+        &D1Type::Text(&c.name),
+        &notes,
+        &fields,
+        &D1Type::Text(&c.data),
+        &key,
+        &pw_hist,
+        &reprompt,
+        &D1Type::Text(&c.updated_at),
+        &D1Type::Text(&c.uuid),
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn soft_delete_cipher(db: &D1Database, uuid: &str, now: &str) -> Result<()> {
+    db.prepare("UPDATE ciphers SET deleted_at = ?1, updated_at = ?1 WHERE uuid = ?2")
+        .bind_refs([&D1Type::Text(now), &D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn restore_cipher(db: &D1Database, uuid: &str, now: &str) -> Result<()> {
+    db.prepare("UPDATE ciphers SET deleted_at = NULL, updated_at = ?1 WHERE uuid = ?2")
+        .bind_refs([&D1Type::Text(now), &D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn hard_delete_cipher(db: &D1Database, uuid: &str) -> Result<()> {
+    // Delete related rows first (no FK enforcement)
+    db.prepare("DELETE FROM folders_ciphers WHERE cipher_uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    db.prepare("DELETE FROM favorites WHERE cipher_uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    db.prepare("DELETE FROM ciphers WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn purge_ciphers_for_user(db: &D1Database, user_uuid: &str) -> Result<()> {
+    db.prepare(
+        "DELETE FROM folders_ciphers WHERE cipher_uuid IN
+         (SELECT uuid FROM ciphers WHERE user_uuid = ?1)",
+    )
+    .bind_refs([&D1Type::Text(user_uuid)])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    db.prepare(
+        "DELETE FROM favorites WHERE cipher_uuid IN
+         (SELECT uuid FROM ciphers WHERE user_uuid = ?1)",
+    )
+    .bind_refs([&D1Type::Text(user_uuid)])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    db.prepare("DELETE FROM ciphers WHERE user_uuid = ?1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+// --- Folder queries ---
+
+pub async fn find_folders_by_user(db: &D1Database, user_uuid: &str) -> Result<Vec<Folder>> {
+    db.prepare("SELECT * FROM folders WHERE user_uuid = ?1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<Folder>()
+        .map_err(d1_err)
+}
+
+pub async fn find_folder_by_uuid(db: &D1Database, uuid: &str) -> Result<Option<Folder>> {
+    db.prepare("SELECT * FROM folders WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .first::<Folder>(None)
+        .await
+        .map_err(d1_err)
+}
+
+pub async fn insert_folder(db: &D1Database, f: &Folder) -> Result<()> {
+    db.prepare(
+        "INSERT INTO folders (uuid, user_uuid, name, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind_refs([
+        &D1Type::Text(&f.uuid),
+        &D1Type::Text(&f.user_uuid),
+        &D1Type::Text(&f.name),
+        &D1Type::Text(&f.created_at),
+        &D1Type::Text(&f.updated_at),
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn update_folder(db: &D1Database, f: &Folder) -> Result<()> {
+    db.prepare("UPDATE folders SET name = ?1, updated_at = ?2 WHERE uuid = ?3")
+        .bind_refs([
+            &D1Type::Text(&f.name),
+            &D1Type::Text(&f.updated_at),
+            &D1Type::Text(&f.uuid),
+        ])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn delete_folder(db: &D1Database, uuid: &str) -> Result<()> {
+    db.prepare("DELETE FROM folders_ciphers WHERE folder_uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    db.prepare("DELETE FROM folders WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+// --- Favorites & folder-cipher links ---
+
+pub async fn find_favorites_by_user(db: &D1Database, user_uuid: &str) -> Result<Vec<Favorite>> {
+    db.prepare("SELECT * FROM favorites WHERE user_uuid = ?1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<Favorite>()
+        .map_err(d1_err)
+}
+
+pub async fn set_favorite(db: &D1Database, user_uuid: &str, cipher_uuid: &str) -> Result<()> {
+    db.prepare("INSERT OR IGNORE INTO favorites (user_uuid, cipher_uuid) VALUES (?1, ?2)")
+        .bind_refs([&D1Type::Text(user_uuid), &D1Type::Text(cipher_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn unset_favorite(db: &D1Database, user_uuid: &str, cipher_uuid: &str) -> Result<()> {
+    db.prepare("DELETE FROM favorites WHERE user_uuid = ?1 AND cipher_uuid = ?2")
+        .bind_refs([&D1Type::Text(user_uuid), &D1Type::Text(cipher_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn find_folder_ciphers_by_user(
+    db: &D1Database,
+    user_uuid: &str,
+) -> Result<Vec<FolderCipher>> {
+    db.prepare(
+        "SELECT fc.* FROM folders_ciphers fc
+         JOIN folders f ON f.uuid = fc.folder_uuid
+         WHERE f.user_uuid = ?1",
+    )
+    .bind_refs([&D1Type::Text(user_uuid)])
+    .map_err(d1_err)?
+    .all()
+    .await
+    .map_err(d1_err)?
+    .results::<FolderCipher>()
+    .map_err(d1_err)
+}
+
+pub async fn set_folder_cipher(
+    db: &D1Database,
+    cipher_uuid: &str,
+    folder_uuid: &str,
+) -> Result<()> {
+    db.prepare("INSERT OR REPLACE INTO folders_ciphers (cipher_uuid, folder_uuid) VALUES (?1, ?2)")
+        .bind_refs([&D1Type::Text(cipher_uuid), &D1Type::Text(folder_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn clear_folder_for_cipher(db: &D1Database, cipher_uuid: &str) -> Result<()> {
+    db.prepare("DELETE FROM folders_ciphers WHERE cipher_uuid = ?1")
+        .bind_refs([&D1Type::Text(cipher_uuid)])
         .map_err(d1_err)?
         .run()
         .await

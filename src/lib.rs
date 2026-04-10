@@ -37,6 +37,22 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/accounts/prelogin", api::accounts::prelogin)
         .post_async("/identity/accounts/register", api::identity::register)
         .post_async("/identity/connect/token", api::identity::connect_token)
+        // Phase 2: Sync
+        .get_async("/api/sync", api::sync::sync)
+        // Phase 2: Folders
+        .get_async("/api/folders", api::folders::get_folders)
+        .post_async("/api/folders", api::folders::post_folder)
+        .put_async("/api/folders/:id", api::folders::put_folder)
+        .delete_async("/api/folders/:id", api::folders::delete_folder)
+        // Phase 2: Ciphers
+        .get_async("/api/ciphers", api::ciphers::get_ciphers)
+        .get_async("/api/ciphers/:id", api::ciphers::get_cipher)
+        .post_async("/api/ciphers", api::ciphers::post_cipher)
+        .put_async("/api/ciphers/:id", api::ciphers::put_cipher)
+        .delete_async("/api/ciphers/:id", api::ciphers::delete_cipher)
+        .put_async("/api/ciphers/:id/delete", api::ciphers::soft_delete_cipher)
+        .put_async("/api/ciphers/:id/restore", api::ciphers::restore_cipher)
+        .post_async("/api/ciphers/purge", api::ciphers::purge_ciphers)
         .run(req, env)
         .await;
 

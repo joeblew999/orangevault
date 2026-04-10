@@ -44,6 +44,50 @@ pub struct User {
     pub updated_at: String,
 }
 
+/// Database representation of a cipher (matches `ciphers` table).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Cipher {
+    pub uuid: String,
+    pub user_uuid: Option<String>,
+    pub organization_uuid: Option<String>,
+    pub atype: i32,
+    pub name: String,
+    pub notes: Option<String>,
+    pub fields: Option<String>,
+    pub data: String,
+    #[serde(rename = "akey")]
+    pub key: Option<String>,
+    pub password_history: Option<String>,
+    pub reprompt: Option<i32>,
+    pub deleted_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Database representation of a folder (matches `folders` table).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Folder {
+    pub uuid: String,
+    pub user_uuid: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Row from `favorites` table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Favorite {
+    pub user_uuid: String,
+    pub cipher_uuid: String,
+}
+
+/// Row from `folders_ciphers` table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderCipher {
+    pub cipher_uuid: String,
+    pub folder_uuid: String,
+}
+
 /// Database representation of a device (matches `devices` table in migration).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {

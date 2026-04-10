@@ -1,6 +1,7 @@
 use worker::{Request, Response, RouteContext};
 
 use crate::auth::claims::RefreshClaims;
+use crate::auth::guards::verify_master_password;
 use crate::auth::jwt;
 use crate::config::RequestContext;
 use crate::crypto::{pbkdf2, random};
@@ -8,7 +9,7 @@ use crate::db::models::{Device, User};
 use crate::db::queries;
 use crate::error::{self, AppError};
 use crate::models::user::{LoginResponse, RegisterRequest, TokenRequest, UserDecryptionOptions};
-use crate::util::{base64_decode, base64_encode, generate_uuid, now_utc};
+use crate::util::{base64_encode, generate_uuid, now_utc};
 
 pub async fn register(
     mut req: Request,
@@ -120,18 +121,7 @@ async fn handle_password_grant(
         .await?
         .ok_or_else(|| oauth_invalid_grant("invalid_username_or_password"))?;
 
-    // Verify: PBKDF2(submitted_hash, stored_salt) == stored_hash
-    let salt = base64_decode(&user.salt)?;
-    let computed = pbkdf2::pbkdf2_sha256(
-        password_hash_input.as_bytes(),
-        &salt,
-        user.password_iterations as u32,
-        32,
-    )
-    .await?;
-    let stored = base64_decode(&user.password_hash)?;
-
-    if computed != stored {
+    if !verify_master_password(&user, password_hash_input).await? {
         return Err(oauth_invalid_grant("invalid_username_or_password"));
     }
 
