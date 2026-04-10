@@ -154,6 +154,32 @@ pub struct TwoFactor {
     pub last_used: Option<i64>,
 }
 
+/// Database representation of a send (matches `sends` table in migration).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Send {
+    pub uuid: String,
+    pub user_uuid: Option<String>,
+    pub organization_uuid: Option<String>,
+    pub atype: i32,
+    pub name: String,
+    pub notes: Option<String>,
+    pub data: String,
+    pub akey: String,
+    pub password_hash: Option<String>,
+    pub password_salt: Option<String>,
+    pub password_iter: Option<i32>,
+    pub max_access_count: Option<i32>,
+    pub access_count: i32,
+    #[serde(deserialize_with = "de_bool_from_int", default)]
+    pub disabled: bool,
+    #[serde(deserialize_with = "de_bool_from_int", default)]
+    pub hide_email: bool,
+    pub expiration_date: Option<String>,
+    pub deletion_date: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Database representation of a device (matches `devices` table in migration).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {

@@ -96,6 +96,27 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             "/api/organizations/:org_id/users",
             api::organizations::get_members,
         )
+        // Phase 5: Sends (specific routes before parameterized ones)
+        .get_async("/api/sends", api::sends::get_sends)
+        .post_async("/api/sends", api::sends::post_send)
+        .post_async("/api/sends/file/v2", api::sends::post_send_file_v2)
+        .post_async("/api/sends/access/:access_id", api::sends::post_access)
+        .post_async(
+            "/api/sends/:send_id/file/:file_id",
+            api::sends::post_send_file,
+        )
+        .post_async(
+            "/api/sends/:send_id/access/file/:file_id",
+            api::sends::post_access_file,
+        )
+        .get_async("/api/sends/:send_id/:file_id", api::sends::get_send_file)
+        .put_async(
+            "/api/sends/:id/remove-password",
+            api::sends::put_send_remove_password,
+        )
+        .get_async("/api/sends/:id", api::sends::get_send)
+        .put_async("/api/sends/:id", api::sends::put_send)
+        .delete_async("/api/sends/:id", api::sends::delete_send)
         .run(req, env)
         .await;
 

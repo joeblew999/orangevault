@@ -7,6 +7,7 @@ use crate::error;
 use crate::models::cipher::CipherResponse;
 use crate::models::folder::FolderResponse;
 use crate::models::organization::{CollectionDetailsResponse, ProfileOrganizationResponse};
+use crate::models::send::SendResponse;
 use crate::models::sync::{DomainsResponse, GlobalDomain, SyncResponse};
 use crate::models::user::ProfileResponse;
 
@@ -108,6 +109,11 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
             let folder_responses: Vec<FolderResponse> =
                 folders.iter().map(FolderResponse::from_db).collect();
 
+            // Sends
+            let sends = queries::find_sends_by_user(&db, &user.uuid).await?;
+            let send_responses: Vec<SendResponse> =
+                sends.iter().map(SendResponse::from_db).collect();
+
             let domains = DomainsResponse {
                 equivalent_domains: vec![],
                 global_equivalent_domains: default_global_domains(),
@@ -120,7 +126,7 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
                 folders: folder_responses,
                 collections: collections_resp,
                 policies: vec![],
-                sends: vec![],
+                sends: send_responses,
                 domains,
                 object: "sync".into(),
             };

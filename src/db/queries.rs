@@ -4,7 +4,7 @@ use crate::error::{AppError, Result};
 
 use super::models::{
     Cipher, CipherCollection, Collection, Device, Favorite, Folder, FolderCipher, Membership,
-    Organization, TwoFactor, User, UserCollection,
+    Organization, Send, TwoFactor, User, UserCollection,
 };
 
 fn d1_err(e: worker::Error) -> AppError {
@@ -891,6 +891,131 @@ pub async fn update_two_factor_last_used(
 ) -> Result<()> {
     db.prepare("UPDATE two_factor SET last_used = ?1 WHERE uuid = ?2")
         .bind_refs([&D1Type::Real(timestamp as f64), &D1Type::Text(tf_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+// --- Send queries ---
+
+pub async fn find_sends_by_user(db: &D1Database, user_uuid: &str) -> Result<Vec<Send>> {
+    db.prepare("SELECT * FROM sends WHERE user_uuid = ?1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<Send>()
+        .map_err(d1_err)
+}
+
+pub async fn find_send_by_uuid(db: &D1Database, uuid: &str) -> Result<Option<Send>> {
+    db.prepare("SELECT * FROM sends WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .first::<Send>(None)
+        .await
+        .map_err(d1_err)
+}
+
+pub async fn insert_send(db: &D1Database, s: &Send) -> Result<()> {
+    let user = opt_text(&s.user_uuid);
+    let org = opt_text(&s.organization_uuid);
+    let notes = opt_text(&s.notes);
+    let pw_hash = opt_text(&s.password_hash);
+    let pw_salt = opt_text(&s.password_salt);
+    let pw_iter = opt_int(s.password_iter);
+    let max_access = opt_int(s.max_access_count);
+    let expiration = opt_text(&s.expiration_date);
+
+    db.prepare(
+        "INSERT INTO sends (uuid, user_uuid, organization_uuid, atype, name, notes,
+         data, akey, password_hash, password_salt, password_iter,
+         max_access_count, access_count, disabled, hide_email,
+         expiration_date, deletion_date, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+    )
+    .bind_refs([
+        &D1Type::Text(&s.uuid),
+        &user,
+        &org,
+        &D1Type::Integer(s.atype),
+        &D1Type::Text(&s.name),
+        &notes,
+        &D1Type::Text(&s.data),
+        &D1Type::Text(&s.akey),
+        &pw_hash,
+        &pw_salt,
+        &pw_iter,
+        &max_access,
+        &D1Type::Integer(s.access_count),
+        &D1Type::Boolean(s.disabled),
+        &D1Type::Boolean(s.hide_email),
+        &expiration,
+        &D1Type::Text(&s.deletion_date),
+        &D1Type::Text(&s.created_at),
+        &D1Type::Text(&s.updated_at),
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn update_send(db: &D1Database, s: &Send) -> Result<()> {
+    let notes = opt_text(&s.notes);
+    let pw_hash = opt_text(&s.password_hash);
+    let pw_salt = opt_text(&s.password_salt);
+    let pw_iter = opt_int(s.password_iter);
+    let max_access = opt_int(s.max_access_count);
+    let expiration = opt_text(&s.expiration_date);
+
+    db.prepare(
+        "UPDATE sends SET name = ?1, notes = ?2, data = ?3, akey = ?4,
+         password_hash = ?5, password_salt = ?6, password_iter = ?7,
+         max_access_count = ?8, disabled = ?9, hide_email = ?10,
+         expiration_date = ?11, deletion_date = ?12, updated_at = ?13
+         WHERE uuid = ?14",
+    )
+    .bind_refs([
+        &D1Type::Text(&s.name),
+        &notes,
+        &D1Type::Text(&s.data),
+        &D1Type::Text(&s.akey),
+        &pw_hash,
+        &pw_salt,
+        &pw_iter,
+        &max_access,
+        &D1Type::Boolean(s.disabled),
+        &D1Type::Boolean(s.hide_email),
+        &expiration,
+        &D1Type::Text(&s.deletion_date),
+        &D1Type::Text(&s.updated_at),
+        &D1Type::Text(&s.uuid),
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn increment_send_access_count(db: &D1Database, uuid: &str, now: &str) -> Result<()> {
+    db.prepare("UPDATE sends SET access_count = access_count + 1, updated_at = ?1 WHERE uuid = ?2")
+        .bind_refs([&D1Type::Text(now), &D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn delete_send(db: &D1Database, uuid: &str) -> Result<()> {
+    db.prepare("DELETE FROM sends WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
         .map_err(d1_err)?
         .run()
         .await

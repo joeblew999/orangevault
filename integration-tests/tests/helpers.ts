@@ -70,6 +70,14 @@ export async function applyMigrations() {
   }
 }
 
+export function futureIso(days: number = 7): string {
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+export function pastIso(seconds: number = 60): string {
+  return new Date(Date.now() - seconds * 1000).toISOString();
+}
+
 function generateUniqueId(prefix: string): string {
   const shortTimestamp = Date.now().toString().slice(-6);
   const randomPart = Math.random().toString(36).slice(2, 6);
