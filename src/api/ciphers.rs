@@ -6,6 +6,7 @@ use crate::db::models::Cipher;
 use crate::db::queries;
 use crate::error::{self, AppError};
 use crate::models::cipher::{CipherRequest, CipherResponse};
+use crate::notifications::{self, UpdateType};
 use crate::util::{generate_uuid, now_utc};
 
 /// Fetch a cipher by route param "id" and verify the user has access.
@@ -142,6 +143,16 @@ pub async fn post_cipher(
                 body.folder_id.clone(),
                 vec![],
             );
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncCipherCreate,
+                &cipher.uuid,
+                serde_json::json!({"Id": cipher.uuid, "RevisionDate": cipher.updated_at}),
+            )
+            .await;
+
             Ok(Response::from_json(&resp)?)
         }
         .await,
@@ -196,6 +207,16 @@ pub async fn put_cipher(
                 body.folder_id.clone(),
                 col_ids,
             );
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncCipherUpdate,
+                &cipher.uuid,
+                serde_json::json!({"Id": cipher.uuid, "RevisionDate": cipher.updated_at}),
+            )
+            .await;
+
             Ok(Response::from_json(&resp)?)
         }
         .await,
@@ -211,7 +232,18 @@ pub async fn delete_cipher(
             let user = auth_from_request(&req, &ctx.data).await?;
             let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
             let db = ctx.data.db()?;
+            let cipher_uuid = cipher.uuid.clone();
             queries::hard_delete_cipher(&db, &cipher.uuid).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncCipherDelete,
+                &cipher_uuid,
+                serde_json::json!({"Id": cipher_uuid}),
+            )
+            .await;
+
             Ok(Response::empty()?.with_status(200))
         }
         .await,
@@ -228,6 +260,16 @@ pub async fn soft_delete_cipher(
             let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
             let db = ctx.data.db()?;
             queries::soft_delete_cipher(&db, &cipher.uuid, &now_utc()).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncCipherUpdate,
+                &cipher.uuid,
+                serde_json::json!({"Id": cipher.uuid}),
+            )
+            .await;
+
             Ok(Response::empty()?.with_status(200))
         }
         .await,
@@ -244,6 +286,16 @@ pub async fn restore_cipher(
             let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
             let db = ctx.data.db()?;
             queries::restore_cipher(&db, &cipher.uuid, &now_utc()).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncCipherUpdate,
+                &cipher.uuid,
+                serde_json::json!({"Id": cipher.uuid}),
+            )
+            .await;
+
             Ok(Response::empty()?.with_status(200))
         }
         .await,
@@ -278,6 +330,16 @@ pub async fn purge_ciphers(
             }
 
             queries::purge_ciphers_for_user(&db, &user.uuid).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncVault,
+                &user.uuid,
+                serde_json::json!({}),
+            )
+            .await;
+
             Ok(Response::empty()?.with_status(200))
         }
         .await,

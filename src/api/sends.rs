@@ -10,6 +10,7 @@ use crate::models::send::{
     SEND_TYPE_FILE, SEND_TYPE_TEXT, SendAccessRequest, SendAccessResponse,
     SendFileDownloadResponse, SendFileUploadResponse, SendRequest, SendResponse,
 };
+use crate::notifications::{self, UpdateType};
 use crate::util::{base64_encode, base64url_decode, generate_uuid, now_utc};
 
 const SEND_PASSWORD_ITERATIONS: u32 = 100_000;
@@ -126,6 +127,7 @@ pub async fn post_send(
             let data =
                 serde_json::to_string(&body.text.as_ref().unwrap_or(&serde_json::Value::Null))
                     .unwrap_or_default();
+            let user_uuid = user.uuid.clone();
             let send = new_send_from_request(
                 user.uuid,
                 body,
@@ -138,6 +140,16 @@ pub async fn post_send(
 
             let db = ctx.data.db()?;
             queries::insert_send(&db, &send).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &user_uuid,
+                UpdateType::SyncSendCreate,
+                &send.uuid,
+                serde_json::json!({"Id": send.uuid, "RevisionDate": send.updated_at}),
+            )
+            .await;
+
             Ok(Response::from_json(&SendResponse::from_db(&send))?)
         }
         .await,
@@ -183,6 +195,7 @@ pub async fn post_send_file_v2(
             let data = serde_json::to_string(&file_obj).unwrap_or_default();
 
             let (pw_hash, pw_salt, pw_iter) = hash_send_password(body.password.as_deref()).await?;
+            let user_uuid = user.uuid.clone();
             let send = new_send_from_request(
                 user.uuid,
                 body,
@@ -195,6 +208,15 @@ pub async fn post_send_file_v2(
 
             let db = ctx.data.db()?;
             queries::insert_send(&db, &send).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &user_uuid,
+                UpdateType::SyncSendCreate,
+                &send.uuid,
+                serde_json::json!({"Id": send.uuid, "RevisionDate": send.updated_at}),
+            )
+            .await;
 
             let domain = ctx.data.domain()?;
             let url = format!("{domain}/api/sends/{}/file/{}", send.uuid, file_id);
@@ -296,6 +318,15 @@ pub async fn put_send(
             let db = ctx.data.db()?;
             queries::update_send(&db, &send).await?;
 
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncSendUpdate,
+                &send.uuid,
+                serde_json::json!({"Id": send.uuid, "RevisionDate": send.updated_at}),
+            )
+            .await;
+
             Ok(Response::from_json(&SendResponse::from_db(&send))?)
         }
         .await,
@@ -318,6 +349,15 @@ pub async fn put_send_remove_password(
             send.updated_at = now_utc();
             let db = ctx.data.db()?;
             queries::update_send(&db, &send).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncSendUpdate,
+                &send.uuid,
+                serde_json::json!({"Id": send.uuid, "RevisionDate": send.updated_at}),
+            )
+            .await;
 
             Ok(Response::from_json(&SendResponse::from_db(&send))?)
         }
@@ -343,8 +383,19 @@ pub async fn delete_send(
                 let _ = r2.delete(&r2_key).await;
             }
 
+            let send_uuid = send.uuid.clone();
             let db = ctx.data.db()?;
             queries::delete_send(&db, &send.uuid).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncSendDelete,
+                &send_uuid,
+                serde_json::json!({"Id": send_uuid}),
+            )
+            .await;
+
             Ok(Response::empty()?.with_status(200))
         }
         .await,

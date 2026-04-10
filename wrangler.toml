@@ -18,6 +18,15 @@ bucket_name = "orangevault-files"
 binding = "CACHE"
 id = "placeholder"
 
+[durable_objects]
+bindings = [
+  { name = "USER_NOTIFIER", class_name = "UserNotifier" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UserNotifier"]
+
 [vars]
 DOMAIN = "https://vault.example.com"
 SIGNUPS_ALLOWED = "true"

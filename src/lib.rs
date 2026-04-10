@@ -8,6 +8,7 @@ mod db;
 mod error;
 mod middleware;
 mod models;
+pub mod notifications;
 mod util;
 
 use config::RequestContext;
@@ -117,11 +118,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/api/sends/:id", api::sends::get_send)
         .put_async("/api/sends/:id", api::sends::put_send)
         .delete_async("/api/sends/:id", api::sends::delete_send)
+        // Phase 6: Notifications (WebSocket via Durable Object)
+        .get_async("/notifications/hub", api::notifications::hub)
         .run(req, env)
         .await;
 
-    // Apply CORS headers to all responses
+    // Apply CORS headers (skip for WebSocket 101 upgrades — headers are immutable)
     match response {
+        Ok(resp) if resp.status_code() == 101 => Ok(resp),
         Ok(resp) => cors::apply_cors_headers(resp, origin.as_deref()),
         Err(e) => {
             console_error!("Router error: {e}");

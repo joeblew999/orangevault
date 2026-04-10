@@ -21,6 +21,7 @@ chrono = { version = "0.4", features = ["wasmbind", "clock"], default-features =
 base64 = "0.22"
 console_error_panic_hook = "0.1"
 serde_urlencoded = "0.7"
+rmpv = "1"
 
 [profile.release]
 opt-level = "s"

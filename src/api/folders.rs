@@ -6,6 +6,7 @@ use crate::db::models::Folder;
 use crate::db::queries;
 use crate::error::{self, AppError};
 use crate::models::folder::{FolderRequest, FolderResponse};
+use crate::notifications::{self, UpdateType};
 use crate::util::{generate_uuid, now_utc};
 
 pub async fn get_folders(
@@ -51,6 +52,16 @@ pub async fn post_folder(
 
             let db = ctx.data.db()?;
             queries::insert_folder(&db, &folder).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &folder.user_uuid,
+                UpdateType::SyncFolderCreate,
+                &folder.uuid,
+                serde_json::json!({"Id": folder.uuid, "RevisionDate": folder.updated_at}),
+            )
+            .await;
+
             let resp = FolderResponse::from_db(&folder);
             Ok(Response::from_json(&resp)?)
         }
@@ -87,6 +98,15 @@ pub async fn put_folder(
             folder.updated_at = now_utc();
             queries::update_folder(&db, &folder).await?;
 
+            notifications::send_notification(
+                &ctx.env,
+                &folder.user_uuid,
+                UpdateType::SyncFolderUpdate,
+                &folder.uuid,
+                serde_json::json!({"Id": folder.uuid, "RevisionDate": folder.updated_at}),
+            )
+            .await;
+
             let resp = FolderResponse::from_db(&folder);
             Ok(Response::from_json(&resp)?)
         }
@@ -116,6 +136,16 @@ pub async fn delete_folder(
             }
 
             queries::delete_folder(&db, &folder_id).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncFolderDelete,
+                &folder_id,
+                serde_json::json!({"Id": folder_id}),
+            )
+            .await;
+
             Ok(Response::empty()?.with_status(200))
         }
         .await,

@@ -25,10 +25,14 @@ const mf_instance = new Miniflare({
       d1Databases: ["DB"],
       kvNamespaces: ["CACHE"],
       r2Buckets: ["FILES"],
+      durableObjects: {
+        USER_NOTIFIER: "UserNotifier",
+      },
       bindings: {
         DOMAIN: "http://localhost",
         SIGNUPS_ALLOWED: "true",
         WEB_VAULT_ENABLED: "true",
+        PING_INTERVAL_SECS: "1",
       },
     },
   ],
