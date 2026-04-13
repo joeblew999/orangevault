@@ -209,3 +209,79 @@ pub async fn get_recover(
         .await,
     )
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DisableTwoFactorRequest {
+    master_password_hash: Option<String>,
+    r#type: i32,
+}
+
+/// PUT /two-factor/disable — disable a specific 2FA provider.
+pub async fn disable_two_factor(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let body: DisableTwoFactorRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            verify_password_and_get_user(&db, &user.uuid, body.master_password_hash.as_deref())
+                .await?;
+
+            let tf = queries::find_two_factor_by_user_and_type(&db, &user.uuid, body.r#type)
+                .await?
+                .ok_or(AppError::NotFound("2FA provider not found".into()))?;
+
+            queries::disable_two_factor(&db, &tf.uuid).await?;
+
+            // If no enabled 2FA remains, clear recovery code
+            let remaining = queries::find_two_factors_by_user(&db, &user.uuid).await?;
+            let any_enabled = remaining.iter().any(|t| t.enabled && t.uuid != tf.uuid);
+            if !any_enabled {
+                queries::update_user_totp_recover(&db, &user.uuid, None).await?;
+            }
+
+            Ok(Response::from_json(&TwoFactorProviderResponse {
+                enabled: false,
+                r#type: body.r#type,
+                object: "twoFactorProvider".into(),
+            })?)
+        }
+        .await,
+    )
+}
+
+/// POST /two-factor/recover — regenerate recovery code.
+pub async fn post_recover(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let body: PasswordOrOtp = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            verify_password_and_get_user(&db, &user.uuid, body.master_password_hash.as_deref())
+                .await?;
+
+            let recovery = generate_recovery_code()?;
+            queries::update_user_totp_recover(&db, &user.uuid, Some(&recovery)).await?;
+
+            Ok(Response::from_json(&RecoverResponse {
+                code: Some(recovery),
+                object: "twoFactorRecover".into(),
+            })?)
+        }
+        .await,
+    )
+}

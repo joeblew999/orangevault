@@ -40,6 +40,34 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/accounts/prelogin", api::accounts::prelogin)
         .post_async("/identity/accounts/register", api::identity::register)
         .post_async("/identity/connect/token", api::identity::connect_token)
+        // Account management
+        .get_async("/api/accounts/profile", api::accounts::get_profile)
+        .put_async("/api/accounts/profile", api::accounts::put_profile)
+        .post_async("/api/accounts/password", api::accounts::post_password)
+        .put_async("/api/accounts/kdf", api::accounts::put_kdf)
+        .put_async("/api/accounts/keys", api::accounts::put_keys)
+        .post_async(
+            "/api/accounts/verify-password",
+            api::accounts::verify_password,
+        )
+        .post_async(
+            "/api/accounts/security-stamp",
+            api::accounts::post_security_stamp,
+        )
+        .post_async("/api/accounts/api-key", api::accounts::post_api_key)
+        .post_async(
+            "/api/accounts/rotate-api-key",
+            api::accounts::rotate_api_key,
+        )
+        .delete_async("/api/accounts", api::accounts::delete_account)
+        .get_async(
+            "/api/accounts/revision-date",
+            api::accounts::get_revision_date,
+        )
+        // Settings / equivalent domains
+        .get_async("/api/settings/domains", api::accounts::get_domains)
+        .post_async("/api/settings/domains", api::accounts::post_domains)
+        .put_async("/api/settings/domains", api::accounts::post_domains)
         // Phase 2: Sync
         .get_async("/api/sync", api::sync::sync)
         // Phase 2: Folders
@@ -47,17 +75,49 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/api/folders", api::folders::post_folder)
         .put_async("/api/folders/:id", api::folders::put_folder)
         .delete_async("/api/folders/:id", api::folders::delete_folder)
-        // Phase 2: Ciphers
+        // Phase 2: Ciphers (static paths BEFORE parameterized :id)
         .get_async("/api/ciphers", api::ciphers::get_ciphers)
-        .get_async("/api/ciphers/:id", api::ciphers::get_cipher)
         .post_async("/api/ciphers", api::ciphers::post_cipher)
+        .post_async("/api/ciphers/purge", api::ciphers::purge_ciphers)
+        .put_async("/api/ciphers/move", api::ciphers::bulk_move)
+        .put_async("/api/ciphers/delete", api::ciphers::bulk_soft_delete)
+        .put_async("/api/ciphers/restore", api::ciphers::bulk_restore)
+        .post_async("/api/ciphers/import", api::ciphers::import_ciphers)
+        // Cipher attachment routes (before generic :id)
+        .post_async(
+            "/api/ciphers/:id/attachment/v2",
+            api::ciphers::post_attachment_v2,
+        )
+        .post_async(
+            "/api/ciphers/:id/attachment/:att_id",
+            api::ciphers::upload_attachment,
+        )
+        .get_async(
+            "/api/ciphers/:id/attachment/:att_id",
+            api::ciphers::get_attachment,
+        )
+        .delete_async(
+            "/api/ciphers/:id/attachment/:att_id",
+            api::ciphers::delete_attachment,
+        )
+        // Cipher collection management
+        .post_async(
+            "/api/ciphers/:id/collections",
+            api::ciphers::post_cipher_collections,
+        )
+        .post_async(
+            "/api/ciphers/:id/collections-admin",
+            api::ciphers::post_cipher_collections_admin,
+        )
+        // Cipher sharing
+        .put_async("/api/ciphers/:id/share", api::organizations::share_cipher)
+        .post_async("/api/ciphers/:id/share", api::organizations::share_cipher)
+        // Cipher CRUD (parameterized :id last)
+        .get_async("/api/ciphers/:id", api::ciphers::get_cipher)
         .put_async("/api/ciphers/:id", api::ciphers::put_cipher)
         .delete_async("/api/ciphers/:id", api::ciphers::delete_cipher)
         .put_async("/api/ciphers/:id/delete", api::ciphers::soft_delete_cipher)
         .put_async("/api/ciphers/:id/restore", api::ciphers::restore_cipher)
-        .post_async("/api/ciphers/purge", api::ciphers::purge_ciphers)
-        .put_async("/api/ciphers/:id/share", api::organizations::share_cipher)
-        .post_async("/api/ciphers/:id/share", api::organizations::share_cipher)
         // Phase 4: Two-Factor Auth
         .get_async("/api/two-factor", api::two_factor::get_two_factor)
         .post_async(
@@ -73,6 +133,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             api::two_factor::post_authenticator,
         )
         .post_async("/api/two-factor/get-recover", api::two_factor::get_recover)
+        .put_async(
+            "/api/two-factor/disable",
+            api::two_factor::disable_two_factor,
+        )
+        .post_async("/api/two-factor/recover", api::two_factor::post_recover)
         // Phase 3: Organizations
         .post_async("/api/organizations", api::organizations::post_organization)
         .get_async(
@@ -99,6 +164,57 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             "/api/organizations/:org_id/users",
             api::organizations::get_members,
         )
+        // Member management (specific paths before parameterized :member_id)
+        .post_async(
+            "/api/organizations/:org_id/users/invite",
+            api::organizations::invite_member,
+        )
+        .post_async(
+            "/api/organizations/:org_id/users/:member_id/accept",
+            api::organizations::accept_invite,
+        )
+        .post_async(
+            "/api/organizations/:org_id/users/:member_id/confirm",
+            api::organizations::confirm_member,
+        )
+        .post_async(
+            "/api/organizations/:org_id/users/:member_id/reinvite",
+            api::organizations::reinvite_member,
+        )
+        .get_async(
+            "/api/organizations/:org_id/users/:member_id",
+            api::organizations::get_member,
+        )
+        .put_async(
+            "/api/organizations/:org_id/users/:member_id",
+            api::organizations::update_member,
+        )
+        .delete_async(
+            "/api/organizations/:org_id/users/:member_id",
+            api::organizations::remove_member,
+        )
+        // Collection management
+        .put_async(
+            "/api/organizations/:org_id/collections/:col_id/users",
+            api::organizations::set_collection_users,
+        )
+        .get_async(
+            "/api/organizations/:org_id/collections/:col_id/users",
+            api::organizations::get_collection_users,
+        )
+        .put_async(
+            "/api/organizations/:org_id/collections/:col_id",
+            api::organizations::update_collection,
+        )
+        // Organization policies
+        .get_async(
+            "/api/organizations/:org_id/policies",
+            api::organizations::get_policies,
+        )
+        .put_async(
+            "/api/organizations/:org_id/policies/:type",
+            api::organizations::put_policy,
+        )
         // Phase 5: Sends (specific routes before parameterized ones)
         .get_async("/api/sends", api::sends::get_sends)
         .post_async("/api/sends", api::sends::post_send)
@@ -120,6 +236,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/api/sends/:id", api::sends::get_send)
         .put_async("/api/sends/:id", api::sends::put_send)
         .delete_async("/api/sends/:id", api::sends::delete_send)
+        // Events
+        .post_async("/api/collect", api::events::collect_events)
+        .get_async(
+            "/api/organizations/:org_id/events",
+            api::events::get_org_events,
+        )
+        // Icons (no auth required)
+        .get_async("/icons/:domain/icon.png", api::icons::get_icon)
         // Phase 6: Notifications (WebSocket via Durable Object)
         .get_async("/notifications/hub", api::notifications::hub)
         .run(req, env)

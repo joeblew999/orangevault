@@ -38,3 +38,7 @@ pub fn base64_decode(data: &str) -> Result<Vec<u8>> {
         .decode(data)
         .map_err(|e| crate::error::AppError::BadRequest(format!("Invalid base64: {e}")))
 }
+
+pub fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}

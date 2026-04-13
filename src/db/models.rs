@@ -180,6 +180,53 @@ pub struct Send {
     pub updated_at: String,
 }
 
+/// Database representation of an event (matches `events` table).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Event {
+    pub uuid: String,
+    pub event_type: i32,
+    pub user_uuid: Option<String>,
+    pub org_uuid: Option<String>,
+    pub cipher_uuid: Option<String>,
+    pub collection_uuid: Option<String>,
+    pub group_uuid: Option<String>,
+    pub member_uuid: Option<String>,
+    pub act_user_uuid: Option<String>,
+    pub device_type: Option<i32>,
+    pub ip_address: Option<String>,
+    pub event_date: String,
+}
+
+/// Database representation of an organization policy (matches `org_policies` table).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrgPolicy {
+    pub uuid: String,
+    pub org_uuid: String,
+    pub atype: i32,
+    #[serde(deserialize_with = "de_bool_from_int", default)]
+    pub enabled: bool,
+    pub data: Option<String>,
+}
+
+/// Database representation of equivalent domains (matches `equivalent_domains` table).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EquivalentDomain {
+    pub uuid: String,
+    pub user_uuid: String,
+    pub global_equiv_domains: Option<String>,
+    pub custom_equiv_domains: Option<String>,
+}
+
+/// Database representation of an attachment (matches `attachments` table).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    pub id: String,
+    pub cipher_uuid: String,
+    pub file_name: Option<String>,
+    pub file_size: Option<i64>,
+    pub akey: Option<String>,
+}
+
 /// Database representation of a device (matches `devices` table in migration).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {

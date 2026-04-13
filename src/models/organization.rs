@@ -251,5 +251,83 @@ pub struct MemberResponse {
     pub r#type: i32,
     pub status: i32,
     pub access_all: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collections: Option<Vec<CollectionSelectionResponse>>,
     pub object: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteRequest {
+    pub emails: Vec<String>,
+    pub r#type: i32,
+    #[serde(default)]
+    pub access_all: bool,
+    #[serde(default)]
+    pub collections: Vec<CollectionSelection>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionSelection {
+    pub id: String,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub hide_passwords: bool,
+    #[serde(default)]
+    pub manage: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmRequest {
+    pub key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMemberRequest {
+    pub r#type: i32,
+    #[serde(default)]
+    pub access_all: bool,
+    #[serde(default)]
+    pub collections: Vec<CollectionSelection>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CollectionSelectionResponse {
+    pub id: String,
+    pub read_only: bool,
+    pub hide_passwords: bool,
+    pub manage: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCollectionRequest {
+    pub name: String,
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub users: Vec<CollectionSelection>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct PolicyResponse {
+    pub id: String,
+    pub organization_id: String,
+    pub r#type: i32,
+    pub data: Option<serde_json::Value>,
+    pub enabled: bool,
+    pub object: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyRequest {
+    pub r#type: i32,
+    pub enabled: bool,
+    pub data: Option<serde_json::Value>,
 }

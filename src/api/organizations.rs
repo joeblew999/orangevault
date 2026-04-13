@@ -6,9 +6,11 @@ use crate::db::models::{Collection, Membership, Organization};
 use crate::db::queries;
 use crate::error::{self, AppError};
 use crate::models::organization::{
-    CollectionCreateRequest, CollectionResponse, MemberResponse, OrgCreateRequest,
-    OrganizationResponse, ShareCipherRequest,
+    CollectionCreateRequest, CollectionResponse, CollectionSelectionResponse, ConfirmRequest,
+    InviteRequest, MemberResponse, OrgCreateRequest, OrganizationResponse, PolicyRequest,
+    PolicyResponse, ShareCipherRequest, UpdateCollectionRequest, UpdateMemberRequest,
 };
+use crate::notifications::{self, UpdateType};
 use crate::util::{generate_uuid, now_utc};
 
 /// Require the user to be an admin or owner of the org. Returns the membership.
@@ -277,6 +279,7 @@ pub async fn get_members(
                     r#type: m.atype,
                     status: m.status,
                     access_all: m.access_all,
+                    collections: None,
                     object: "organizationUser".into(),
                 });
             }
@@ -286,6 +289,634 @@ pub async fn get_members(
                 "Object": "list",
                 "ContinuationToken": null,
             }))?)
+        }
+        .await,
+    )
+}
+
+// --- Member management ---
+
+pub async fn invite_member(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+            let body: InviteRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            require_admin(&db, &user.uuid, &org_id).await?;
+
+            for email in &body.emails {
+                let email = email.trim().to_lowercase();
+                if email.is_empty() {
+                    continue;
+                }
+
+                // Check if already a member
+                let existing_user = queries::find_user_by_email(&db, &email).await?;
+                let user_uuid = existing_user
+                    .as_ref()
+                    .map(|u| u.uuid.clone())
+                    .unwrap_or_else(|| email.clone()); // Use email as placeholder UUID for non-existing users
+
+                // Check if already has a membership
+                if queries::find_membership(&db, &user_uuid, &org_id)
+                    .await?
+                    .is_some()
+                {
+                    continue; // Skip duplicate invites
+                }
+
+                // Auto-accept for existing users (status=1), invited for non-existing (status=0)
+                let status = if existing_user.is_some() { 1 } else { 0 };
+
+                let membership = Membership {
+                    uuid: generate_uuid(),
+                    user_uuid,
+                    org_uuid: org_id.clone(),
+                    akey: None,
+                    atype: body.r#type,
+                    status,
+                    access_all: body.access_all,
+                    external_id: None,
+                    reset_password_key: None,
+                };
+                queries::insert_membership(&db, &membership).await?;
+
+                // Set collection access
+                for col in &body.collections {
+                    queries::set_user_collection(
+                        &db,
+                        &membership.user_uuid,
+                        &col.id,
+                        col.read_only,
+                        col.hide_passwords,
+                        col.manage,
+                    )
+                    .await?;
+                }
+            }
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+pub async fn accept_invite(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+            let member_id = ctx
+                .param("member_id")
+                .ok_or(AppError::BadRequest("Missing member_id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            let membership = queries::find_membership_by_uuid(&db, &member_id)
+                .await?
+                .ok_or(AppError::NotFound("Membership not found".into()))?;
+
+            if membership.org_uuid != org_id {
+                return Err(AppError::NotFound("Membership not found".into()));
+            }
+            if membership.user_uuid != user.uuid {
+                return Err(AppError::Forbidden("Not your invitation".into()));
+            }
+            if membership.status != 0 && membership.status != 1 {
+                return Err(AppError::BadRequest("Already accepted".into()));
+            }
+
+            queries::update_membership_status_and_key(&db, &member_id, 1, None).await?;
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+pub async fn confirm_member(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+            let member_id = ctx
+                .param("member_id")
+                .ok_or(AppError::BadRequest("Missing member_id".into()))?
+                .clone();
+            let body: ConfirmRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            require_admin(&db, &user.uuid, &org_id).await?;
+
+            let membership = queries::find_membership_by_uuid(&db, &member_id)
+                .await?
+                .ok_or(AppError::NotFound("Membership not found".into()))?;
+
+            if membership.org_uuid != org_id {
+                return Err(AppError::NotFound("Membership not found".into()));
+            }
+            if membership.status != 1 {
+                return Err(AppError::BadRequest(
+                    "Member must be in Accepted state to confirm".into(),
+                ));
+            }
+
+            queries::update_membership_status_and_key(&db, &member_id, 2, Some(&body.key)).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &membership.user_uuid,
+                UpdateType::SyncVault,
+                &org_id,
+                serde_json::json!({}),
+            )
+            .await;
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+pub async fn get_member(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+            let member_id = ctx
+                .param("member_id")
+                .ok_or(AppError::BadRequest("Missing member_id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            require_member(&db, &user.uuid, &org_id).await?;
+
+            let membership = queries::find_membership_by_uuid(&db, &member_id)
+                .await?
+                .ok_or(AppError::NotFound("Membership not found".into()))?;
+
+            if membership.org_uuid != org_id {
+                return Err(AppError::NotFound("Membership not found".into()));
+            }
+
+            let member_user = queries::find_user_by_uuid(&db, &membership.user_uuid).await?;
+
+            // Get collection access
+            let user_collections =
+                queries::find_user_collections_by_user(&db, &membership.user_uuid).await?;
+            let org_collections = queries::find_collections_by_org(&db, &org_id).await?;
+            let org_col_uuids: Vec<&str> =
+                org_collections.iter().map(|c| c.uuid.as_str()).collect();
+            let collections: Vec<CollectionSelectionResponse> = user_collections
+                .iter()
+                .filter(|uc| org_col_uuids.contains(&uc.collection_uuid.as_str()))
+                .map(|uc| CollectionSelectionResponse {
+                    id: uc.collection_uuid.clone(),
+                    read_only: uc.read_only,
+                    hide_passwords: uc.hide_passwords,
+                    manage: uc.manage,
+                })
+                .collect();
+
+            let resp = MemberResponse {
+                id: membership.uuid,
+                user_id: membership.user_uuid,
+                name: member_user.as_ref().map(|u| u.name.clone()),
+                email: member_user.map(|u| u.email),
+                r#type: membership.atype,
+                status: membership.status,
+                access_all: membership.access_all,
+                collections: Some(collections),
+                object: "organizationUser".into(),
+            };
+
+            Ok(Response::from_json(&resp)?)
+        }
+        .await,
+    )
+}
+
+pub async fn update_member(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+            let member_id = ctx
+                .param("member_id")
+                .ok_or(AppError::BadRequest("Missing member_id".into()))?
+                .clone();
+            let body: UpdateMemberRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            require_admin(&db, &user.uuid, &org_id).await?;
+
+            let membership = queries::find_membership_by_uuid(&db, &member_id)
+                .await?
+                .ok_or(AppError::NotFound("Membership not found".into()))?;
+
+            if membership.org_uuid != org_id {
+                return Err(AppError::NotFound("Membership not found".into()));
+            }
+
+            // Prevent demoting the last owner
+            if membership.atype == 0 && body.r#type != 0 {
+                let owner_count = queries::count_org_owners(&db, &org_id).await?;
+                if owner_count <= 1 {
+                    return Err(AppError::BadRequest("Cannot demote the last owner".into()));
+                }
+            }
+
+            queries::update_membership(&db, &member_id, body.r#type, body.access_all).await?;
+
+            queries::clear_user_collections_for_user_in_org(&db, &membership.user_uuid, &org_id)
+                .await?;
+            for col in &body.collections {
+                queries::set_user_collection(
+                    &db,
+                    &membership.user_uuid,
+                    &col.id,
+                    col.read_only,
+                    col.hide_passwords,
+                    col.manage,
+                )
+                .await?;
+            }
+
+            notifications::send_notification(
+                &ctx.env,
+                &membership.user_uuid,
+                UpdateType::SyncVault,
+                &org_id,
+                serde_json::json!({}),
+            )
+            .await;
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+pub async fn remove_member(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+            let member_id = ctx
+                .param("member_id")
+                .ok_or(AppError::BadRequest("Missing member_id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            require_admin(&db, &user.uuid, &org_id).await?;
+
+            let membership = queries::find_membership_by_uuid(&db, &member_id)
+                .await?
+                .ok_or(AppError::NotFound("Membership not found".into()))?;
+
+            if membership.org_uuid != org_id {
+                return Err(AppError::NotFound("Membership not found".into()));
+            }
+
+            // Prevent removing the last owner
+            if membership.atype == 0 {
+                let owner_count = queries::count_org_owners(&db, &org_id).await?;
+                if owner_count <= 1 {
+                    return Err(AppError::BadRequest("Cannot remove the last owner".into()));
+                }
+            }
+
+            let removed_user_uuid = membership.user_uuid.clone();
+            queries::delete_membership(&db, &member_id, &org_id, &removed_user_uuid).await?;
+
+            notifications::send_notification(
+                &ctx.env,
+                &removed_user_uuid,
+                UpdateType::SyncVault,
+                &org_id,
+                serde_json::json!({}),
+            )
+            .await;
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+pub async fn reinvite_member(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            require_admin(&db, &user.uuid, &org_id).await?;
+
+            // No-op: we don't send emails, but return success for client compatibility
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+// --- Collection management ---
+
+pub async fn update_collection(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+            let col_id = ctx
+                .param("col_id")
+                .ok_or(AppError::BadRequest("Missing col_id".into()))?
+                .clone();
+            let body: UpdateCollectionRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            require_admin(&db, &user.uuid, &org_id).await?;
+
+            let col = queries::find_collection_by_uuid(&db, &col_id)
+                .await?
+                .ok_or(AppError::NotFound("Collection not found".into()))?;
+            if col.org_uuid != org_id {
+                return Err(AppError::Forbidden("Collection not in this org".into()));
+            }
+
+            queries::update_collection_name(&db, &col_id, &body.name, &body.external_id).await?;
+
+            // Update user access if provided
+            if !body.users.is_empty() {
+                queries::clear_user_collections_for_collection(&db, &col_id).await?;
+                for u in &body.users {
+                    queries::set_user_collection(
+                        &db,
+                        &u.id,
+                        &col_id,
+                        u.read_only,
+                        u.hide_passwords,
+                        u.manage,
+                    )
+                    .await?;
+                }
+            }
+
+            let updated_col = Collection {
+                uuid: col_id,
+                org_uuid: org_id,
+                name: body.name,
+                external_id: body.external_id,
+            };
+            Ok(Response::from_json(&CollectionResponse::from_db(
+                &updated_col,
+            ))?)
+        }
+        .await,
+    )
+}
+
+pub async fn get_collection_users(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+            let col_id = ctx
+                .param("col_id")
+                .ok_or(AppError::BadRequest("Missing col_id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            require_member(&db, &user.uuid, &org_id).await?;
+
+            let col = queries::find_collection_by_uuid(&db, &col_id)
+                .await?
+                .ok_or(AppError::NotFound("Collection not found".into()))?;
+            if col.org_uuid != org_id {
+                return Err(AppError::Forbidden("Collection not in this org".into()));
+            }
+
+            let user_collections =
+                queries::find_user_collections_by_collection(&db, &col_id).await?;
+            let data: Vec<CollectionSelectionResponse> = user_collections
+                .iter()
+                .map(|uc| CollectionSelectionResponse {
+                    id: uc.user_uuid.clone(),
+                    read_only: uc.read_only,
+                    hide_passwords: uc.hide_passwords,
+                    manage: uc.manage,
+                })
+                .collect();
+
+            Ok(Response::from_json(&data)?)
+        }
+        .await,
+    )
+}
+
+pub async fn set_collection_users(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+            let col_id = ctx
+                .param("col_id")
+                .ok_or(AppError::BadRequest("Missing col_id".into()))?
+                .clone();
+            let body: Vec<crate::models::organization::CollectionSelection> = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            require_admin(&db, &user.uuid, &org_id).await?;
+
+            let col = queries::find_collection_by_uuid(&db, &col_id)
+                .await?
+                .ok_or(AppError::NotFound("Collection not found".into()))?;
+            if col.org_uuid != org_id {
+                return Err(AppError::Forbidden("Collection not in this org".into()));
+            }
+
+            queries::clear_user_collections_for_collection(&db, &col_id).await?;
+            for u in &body {
+                queries::set_user_collection(
+                    &db,
+                    &u.id,
+                    &col_id,
+                    u.read_only,
+                    u.hide_passwords,
+                    u.manage,
+                )
+                .await?;
+            }
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+// --- Organization Policies ---
+
+pub async fn get_policies(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            require_member(&db, &user.uuid, &org_id).await?;
+
+            let policies = queries::find_policies_by_org(&db, &org_id).await?;
+            let data: Vec<PolicyResponse> = policies
+                .iter()
+                .map(|p| PolicyResponse {
+                    id: p.uuid.clone(),
+                    organization_id: p.org_uuid.clone(),
+                    r#type: p.atype,
+                    data: p.data.as_ref().and_then(|d| serde_json::from_str(d).ok()),
+                    enabled: p.enabled,
+                    object: "policy".into(),
+                })
+                .collect();
+
+            Ok(Response::from_json(&serde_json::json!({
+                "Data": data,
+                "Object": "list",
+                "ContinuationToken": null,
+            }))?)
+        }
+        .await,
+    )
+}
+
+pub async fn put_policy(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+            let policy_type: i32 = ctx
+                .param("type")
+                .ok_or(AppError::BadRequest("Missing policy type".into()))?
+                .parse()
+                .map_err(|_| AppError::BadRequest("Invalid policy type".into()))?;
+
+            let body: PolicyRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            require_admin(&db, &user.uuid, &org_id).await?;
+
+            let existing = queries::find_policy_by_org_and_type(&db, &org_id, policy_type).await?;
+            let uuid = existing.map(|p| p.uuid).unwrap_or_else(generate_uuid);
+
+            let data_str = body.data.as_ref().map(|d| d.to_string());
+
+            let policy = crate::db::models::OrgPolicy {
+                uuid: uuid.clone(),
+                org_uuid: org_id.clone(),
+                atype: policy_type,
+                enabled: body.enabled,
+                data: data_str.clone(),
+            };
+            queries::upsert_policy(&db, &policy).await?;
+
+            Ok(Response::from_json(&PolicyResponse {
+                id: uuid,
+                organization_id: org_id,
+                r#type: policy_type,
+                data: body.data,
+                enabled: body.enabled,
+                object: "policy".into(),
+            })?)
         }
         .await,
     )

@@ -34,3 +34,53 @@ pub struct GlobalDomain {
     pub domains: Vec<String>,
     pub excluded: bool,
 }
+
+pub fn default_global_domains() -> Vec<GlobalDomain> {
+    vec![
+        GlobalDomain {
+            r#type: 0,
+            domains: ["google.com", "youtube.com", "gmail.com", "googlemail.com"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            excluded: false,
+        },
+        GlobalDomain {
+            r#type: 1,
+            domains: ["apple.com", "icloud.com", "me.com"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            excluded: false,
+        },
+        GlobalDomain {
+            r#type: 2,
+            domains: [
+                "live.com",
+                "microsoft.com",
+                "microsoftonline.com",
+                "outlook.com",
+                "hotmail.com",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+            excluded: false,
+        },
+        GlobalDomain {
+            r#type: 3,
+            domains: [
+                "amazon.com",
+                "amazon.co.uk",
+                "amazon.ca",
+                "amazon.de",
+                "amazon.in",
+                "amazon.co.jp",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+            excluded: false,
+        },
+    ]
+}

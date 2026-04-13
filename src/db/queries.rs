@@ -3,8 +3,9 @@ use worker::d1::{D1Database, D1Type};
 use crate::error::{AppError, Result};
 
 use super::models::{
-    Cipher, CipherCollection, Collection, Device, Favorite, Folder, FolderCipher, Membership,
-    Organization, Send, TwoFactor, User, UserCollection,
+    Attachment, Cipher, CipherCollection, Collection, Device, EquivalentDomain, Event, Favorite,
+    Folder, FolderCipher, Membership, OrgPolicy, Organization, Send, TwoFactor, User,
+    UserCollection,
 };
 
 fn d1_err(e: worker::Error) -> AppError {
@@ -235,6 +236,16 @@ pub async fn update_cipher(db: &D1Database, c: &Cipher) -> Result<()> {
     .run()
     .await
     .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn update_cipher_date(db: &D1Database, uuid: &str, now: &str) -> Result<()> {
+    db.prepare("UPDATE ciphers SET updated_at = ?1 WHERE uuid = ?2")
+        .bind_refs([&D1Type::Text(now), &D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
     Ok(())
 }
 
@@ -598,6 +609,133 @@ pub async fn update_membership_status_and_key(
     Ok(())
 }
 
+pub async fn find_membership_by_uuid(db: &D1Database, uuid: &str) -> Result<Option<Membership>> {
+    db.prepare("SELECT * FROM memberships WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .first::<Membership>(None)
+        .await
+        .map_err(d1_err)
+}
+
+pub async fn update_membership(
+    db: &D1Database,
+    uuid: &str,
+    atype: i32,
+    access_all: bool,
+) -> Result<()> {
+    db.prepare("UPDATE memberships SET atype = ?1, access_all = ?2 WHERE uuid = ?3")
+        .bind_refs([
+            &D1Type::Integer(atype),
+            &D1Type::Boolean(access_all),
+            &D1Type::Text(uuid),
+        ])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn delete_membership(
+    db: &D1Database,
+    uuid: &str,
+    org_uuid: &str,
+    user_uuid: &str,
+) -> Result<()> {
+    // Clean up user's collection access for this org
+    db.prepare(
+        "DELETE FROM users_collections WHERE user_uuid = ?1 AND collection_uuid IN (SELECT uuid FROM collections WHERE org_uuid = ?2)",
+    )
+    .bind_refs([&D1Type::Text(user_uuid), &D1Type::Text(org_uuid)])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+
+    db.prepare("DELETE FROM memberships WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn count_org_owners(db: &D1Database, org_uuid: &str) -> Result<i64> {
+    #[derive(serde::Deserialize)]
+    struct CountRow {
+        cnt: f64,
+    }
+    let row = db
+        .prepare("SELECT COUNT(*) as cnt FROM memberships WHERE org_uuid = ?1 AND atype = 0 AND status = 2")
+        .bind_refs([&D1Type::Text(org_uuid)])
+        .map_err(d1_err)?
+        .first::<CountRow>(None)
+        .await
+        .map_err(d1_err)?;
+    Ok(row.map(|r| r.cnt as i64).unwrap_or(0))
+}
+
+pub async fn find_user_collections_by_collection(
+    db: &D1Database,
+    collection_uuid: &str,
+) -> Result<Vec<UserCollection>> {
+    db.prepare("SELECT * FROM users_collections WHERE collection_uuid = ?1")
+        .bind_refs([&D1Type::Text(collection_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<UserCollection>()
+        .map_err(d1_err)
+}
+
+pub async fn update_collection_name(
+    db: &D1Database,
+    uuid: &str,
+    name: &str,
+    external_id: &Option<String>,
+) -> Result<()> {
+    let ext = opt_text(external_id);
+    db.prepare("UPDATE collections SET name = ?1, external_id = ?2 WHERE uuid = ?3")
+        .bind_refs([&D1Type::Text(name), &ext, &D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn clear_user_collections_for_collection(
+    db: &D1Database,
+    collection_uuid: &str,
+) -> Result<()> {
+    db.prepare("DELETE FROM users_collections WHERE collection_uuid = ?1")
+        .bind_refs([&D1Type::Text(collection_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn clear_user_collections_for_user_in_org(
+    db: &D1Database,
+    user_uuid: &str,
+    org_uuid: &str,
+) -> Result<()> {
+    db.prepare(
+        "DELETE FROM users_collections WHERE user_uuid = ?1 AND collection_uuid IN (SELECT uuid FROM collections WHERE org_uuid = ?2)",
+    )
+    .bind_refs([&D1Type::Text(user_uuid), &D1Type::Text(org_uuid)])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
 // --- Collection queries ---
 
 pub async fn insert_collection(db: &D1Database, c: &Collection) -> Result<()> {
@@ -856,6 +994,16 @@ pub async fn upsert_two_factor(db: &D1Database, tf: &TwoFactor) -> Result<()> {
     Ok(())
 }
 
+pub async fn disable_two_factor(db: &D1Database, uuid: &str) -> Result<()> {
+    db.prepare("UPDATE two_factor SET enabled = 0 WHERE uuid = ?1")
+        .bind_refs([&D1Type::Text(uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
 pub async fn delete_two_factors_for_user(db: &D1Database, user_uuid: &str) -> Result<()> {
     db.prepare("DELETE FROM two_factor WHERE user_uuid = ?1")
         .bind_refs([&D1Type::Text(user_uuid)])
@@ -1065,6 +1213,432 @@ pub async fn purge_trashed_ciphers(db: &D1Database, cutoff: &str) -> Result<()> 
             .map_err(d1_err)?;
     }
     Ok(())
+}
+
+// --- Event queries ---
+
+pub async fn insert_event(db: &D1Database, e: &Event) -> Result<()> {
+    let user = opt_text(&e.user_uuid);
+    let org = opt_text(&e.org_uuid);
+    let cipher = opt_text(&e.cipher_uuid);
+    let collection = opt_text(&e.collection_uuid);
+    let group = opt_text(&e.group_uuid);
+    let member = opt_text(&e.member_uuid);
+    let act_user = opt_text(&e.act_user_uuid);
+    let device = opt_int(e.device_type);
+    let ip = opt_text(&e.ip_address);
+
+    db.prepare(
+        "INSERT INTO events (uuid, event_type, user_uuid, org_uuid, cipher_uuid, collection_uuid,
+         group_uuid, member_uuid, act_user_uuid, device_type, ip_address, event_date)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+    )
+    .bind_refs([
+        &D1Type::Text(&e.uuid),
+        &D1Type::Integer(e.event_type),
+        &user,
+        &org,
+        &cipher,
+        &collection,
+        &group,
+        &member,
+        &act_user,
+        &device,
+        &ip,
+        &D1Type::Text(&e.event_date),
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn find_events_by_org(
+    db: &D1Database,
+    org_uuid: &str,
+    start: &str,
+    end: &str,
+) -> Result<Vec<Event>> {
+    db.prepare(
+        "SELECT * FROM events WHERE org_uuid = ?1 AND event_date >= ?2 AND event_date <= ?3 ORDER BY event_date DESC LIMIT 1000",
+    )
+    .bind_refs([
+        &D1Type::Text(org_uuid),
+        &D1Type::Text(start),
+        &D1Type::Text(end),
+    ])
+    .map_err(d1_err)?
+    .all()
+    .await
+    .map_err(d1_err)?
+    .results::<Event>()
+    .map_err(d1_err)
+}
+
+// --- Organization policy queries ---
+
+pub async fn find_policies_by_org(db: &D1Database, org_uuid: &str) -> Result<Vec<OrgPolicy>> {
+    db.prepare("SELECT * FROM org_policies WHERE org_uuid = ?1")
+        .bind_refs([&D1Type::Text(org_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<OrgPolicy>()
+        .map_err(d1_err)
+}
+
+pub async fn upsert_policy(db: &D1Database, p: &OrgPolicy) -> Result<()> {
+    let data = opt_text(&p.data);
+    db.prepare(
+        "INSERT INTO org_policies (uuid, org_uuid, atype, enabled, data)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(uuid) DO UPDATE SET
+           enabled = excluded.enabled,
+           data = excluded.data",
+    )
+    .bind_refs([
+        &D1Type::Text(&p.uuid),
+        &D1Type::Text(&p.org_uuid),
+        &D1Type::Integer(p.atype),
+        &D1Type::Boolean(p.enabled),
+        &data,
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn find_policy_by_org_and_type(
+    db: &D1Database,
+    org_uuid: &str,
+    atype: i32,
+) -> Result<Option<OrgPolicy>> {
+    db.prepare("SELECT * FROM org_policies WHERE org_uuid = ?1 AND atype = ?2")
+        .bind_refs([&D1Type::Text(org_uuid), &D1Type::Integer(atype)])
+        .map_err(d1_err)?
+        .first::<OrgPolicy>(None)
+        .await
+        .map_err(d1_err)
+}
+
+// --- Equivalent domain queries ---
+
+pub async fn find_equivalent_domains_by_user(
+    db: &D1Database,
+    user_uuid: &str,
+) -> Result<Option<EquivalentDomain>> {
+    db.prepare("SELECT * FROM equivalent_domains WHERE user_uuid = ?1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .first::<EquivalentDomain>(None)
+        .await
+        .map_err(d1_err)
+}
+
+pub async fn upsert_equivalent_domains(db: &D1Database, ed: &EquivalentDomain) -> Result<()> {
+    let global = opt_text(&ed.global_equiv_domains);
+    let custom = opt_text(&ed.custom_equiv_domains);
+    // Delete existing then insert (user_uuid has no UNIQUE constraint)
+    db.prepare("DELETE FROM equivalent_domains WHERE user_uuid = ?1")
+        .bind_refs([&D1Type::Text(&ed.user_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    db.prepare(
+        "INSERT INTO equivalent_domains (uuid, user_uuid, global_equiv_domains, custom_equiv_domains)
+         VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind_refs([
+        &D1Type::Text(&ed.uuid),
+        &D1Type::Text(&ed.user_uuid),
+        &global,
+        &custom,
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+// --- Attachment queries ---
+
+pub async fn insert_attachment(db: &D1Database, a: &Attachment) -> Result<()> {
+    let fname = opt_text(&a.file_name);
+    let fsize = match a.file_size {
+        Some(s) => D1Type::Integer(s as i32),
+        None => D1Type::Null,
+    };
+    let akey = opt_text(&a.akey);
+    db.prepare(
+        "INSERT INTO attachments (id, cipher_uuid, file_name, file_size, akey)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind_refs([
+        &D1Type::Text(&a.id),
+        &D1Type::Text(&a.cipher_uuid),
+        &fname,
+        &fsize,
+        &akey,
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn find_attachment_by_id(db: &D1Database, id: &str) -> Result<Option<Attachment>> {
+    db.prepare("SELECT * FROM attachments WHERE id = ?1")
+        .bind_refs([&D1Type::Text(id)])
+        .map_err(d1_err)?
+        .first::<Attachment>(None)
+        .await
+        .map_err(d1_err)
+}
+
+pub async fn find_attachments_by_cipher(
+    db: &D1Database,
+    cipher_uuid: &str,
+) -> Result<Vec<Attachment>> {
+    db.prepare("SELECT * FROM attachments WHERE cipher_uuid = ?1")
+        .bind_refs([&D1Type::Text(cipher_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<Attachment>()
+        .map_err(d1_err)
+}
+
+pub async fn delete_attachment(db: &D1Database, id: &str) -> Result<()> {
+    db.prepare("DELETE FROM attachments WHERE id = ?1")
+        .bind_refs([&D1Type::Text(id)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn delete_attachments_by_cipher(db: &D1Database, cipher_uuid: &str) -> Result<()> {
+    db.prepare("DELETE FROM attachments WHERE cipher_uuid = ?1")
+        .bind_refs([&D1Type::Text(cipher_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+// --- Account management queries ---
+
+pub async fn update_user_profile(
+    db: &D1Database,
+    uuid: &str,
+    name: &str,
+    avatar_color: &Option<String>,
+    now: &str,
+) -> Result<()> {
+    let avatar = opt_text(avatar_color);
+    db.prepare("UPDATE users SET name = ?1, avatar_color = ?2, updated_at = ?3 WHERE uuid = ?4")
+        .bind_refs([
+            &D1Type::Text(name),
+            &avatar,
+            &D1Type::Text(now),
+            &D1Type::Text(uuid),
+        ])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn update_user_password(
+    db: &D1Database,
+    uuid: &str,
+    password_hash: &str,
+    salt: &str,
+    password_iterations: u32,
+    akey: &str,
+    security_stamp: &str,
+    now: &str,
+) -> Result<()> {
+    db.prepare(
+        "UPDATE users SET password_hash = ?1, salt = ?2, password_iterations = ?3,
+         akey = ?4, security_stamp = ?5, updated_at = ?6 WHERE uuid = ?7",
+    )
+    .bind_refs([
+        &D1Type::Text(password_hash),
+        &D1Type::Text(salt),
+        &D1Type::Integer(password_iterations as i32),
+        &D1Type::Text(akey),
+        &D1Type::Text(security_stamp),
+        &D1Type::Text(now),
+        &D1Type::Text(uuid),
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn update_user_kdf(
+    db: &D1Database,
+    uuid: &str,
+    password_hash: &str,
+    salt: &str,
+    password_iterations: u32,
+    akey: &str,
+    security_stamp: &str,
+    kdf_type: i32,
+    kdf_iter: i32,
+    kdf_memory: Option<i32>,
+    kdf_parallelism: Option<i32>,
+    now: &str,
+) -> Result<()> {
+    let mem = opt_int(kdf_memory);
+    let par = opt_int(kdf_parallelism);
+    db.prepare(
+        "UPDATE users SET password_hash = ?1, salt = ?2, password_iterations = ?3,
+         akey = ?4, security_stamp = ?5,
+         client_kdf_type = ?6, client_kdf_iter = ?7, client_kdf_memory = ?8, client_kdf_parallelism = ?9,
+         updated_at = ?10 WHERE uuid = ?11",
+    )
+    .bind_refs([
+        &D1Type::Text(password_hash),
+        &D1Type::Text(salt),
+        &D1Type::Integer(password_iterations as i32),
+        &D1Type::Text(akey),
+        &D1Type::Text(security_stamp),
+        &D1Type::Integer(kdf_type),
+        &D1Type::Integer(kdf_iter),
+        &mem,
+        &par,
+        &D1Type::Text(now),
+        &D1Type::Text(uuid),
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn update_user_keys(
+    db: &D1Database,
+    uuid: &str,
+    akey: &str,
+    private_key: &str,
+    security_stamp: &str,
+    now: &str,
+) -> Result<()> {
+    db.prepare(
+        "UPDATE users SET akey = ?1, private_key = ?2, security_stamp = ?3, updated_at = ?4 WHERE uuid = ?5",
+    )
+    .bind_refs([
+        &D1Type::Text(akey),
+        &D1Type::Text(private_key),
+        &D1Type::Text(security_stamp),
+        &D1Type::Text(now),
+        &D1Type::Text(uuid),
+    ])
+    .map_err(d1_err)?
+    .run()
+    .await
+    .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn update_user_security_stamp(
+    db: &D1Database,
+    uuid: &str,
+    security_stamp: &str,
+    now: &str,
+) -> Result<()> {
+    db.prepare("UPDATE users SET security_stamp = ?1, updated_at = ?2 WHERE uuid = ?3")
+        .bind_refs([
+            &D1Type::Text(security_stamp),
+            &D1Type::Text(now),
+            &D1Type::Text(uuid),
+        ])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn update_user_api_key(
+    db: &D1Database,
+    uuid: &str,
+    api_key: &str,
+    now: &str,
+) -> Result<()> {
+    db.prepare("UPDATE users SET api_key = ?1, updated_at = ?2 WHERE uuid = ?3")
+        .bind_refs([
+            &D1Type::Text(api_key),
+            &D1Type::Text(now),
+            &D1Type::Text(uuid),
+        ])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
+pub async fn delete_user_cascade(db: &D1Database, uuid: &str) -> Result<()> {
+    // Delete in dependency order (referencing user_uuid or user's owned data)
+    let sub = "SELECT uuid FROM ciphers WHERE user_uuid = ?1";
+    let stmts = [
+        // Cipher-related junction tables for user's personal ciphers
+        "DELETE FROM favorites WHERE user_uuid = ?1".to_string(),
+        format!("DELETE FROM folders_ciphers WHERE cipher_uuid IN ({sub})"),
+        format!("DELETE FROM ciphers_collections WHERE cipher_uuid IN ({sub})"),
+        format!("DELETE FROM attachments WHERE cipher_uuid IN ({sub})"),
+        // Personal ciphers, folders, sends
+        "DELETE FROM ciphers WHERE user_uuid = ?1".to_string(),
+        "DELETE FROM folders WHERE user_uuid = ?1".to_string(),
+        "DELETE FROM sends WHERE user_uuid = ?1".to_string(),
+        // Auth & 2FA
+        "DELETE FROM devices WHERE user_uuid = ?1".to_string(),
+        "DELETE FROM two_factor WHERE user_uuid = ?1".to_string(),
+        // Org memberships & collection access
+        "DELETE FROM users_collections WHERE user_uuid = ?1".to_string(),
+        "DELETE FROM memberships WHERE user_uuid = ?1".to_string(),
+        // Settings
+        "DELETE FROM equivalent_domains WHERE user_uuid = ?1".to_string(),
+        // Finally, the user
+        "DELETE FROM users WHERE uuid = ?1".to_string(),
+    ];
+    for sql in &stmts {
+        db.prepare(sql)
+            .bind_refs([&D1Type::Text(uuid)])
+            .map_err(d1_err)?
+            .run()
+            .await
+            .map_err(d1_err)?;
+    }
+    Ok(())
+}
+
+pub async fn find_file_send_data_by_user(db: &D1Database, user_uuid: &str) -> Result<Vec<Send>> {
+    db.prepare("SELECT * FROM sends WHERE user_uuid = ?1 AND atype = 1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .all()
+        .await
+        .map_err(d1_err)?
+        .results::<Send>()
+        .map_err(d1_err)
 }
 
 // --- Helpers ---

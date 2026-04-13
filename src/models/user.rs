@@ -122,3 +122,72 @@ pub struct UserDecryptionOptions {
     #[serde(rename = "HasMasterPassword")]
     pub has_master_password: bool,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProfileRequest {
+    pub name: Option<String>,
+    #[allow(dead_code)]
+    pub master_password_hint: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangePasswordRequest {
+    pub master_password_hash: String,
+    pub new_master_password_hash: String,
+    #[allow(dead_code)]
+    pub master_password_hint: Option<String>,
+    pub key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeKdfRequest {
+    pub master_password_hash: String,
+    pub new_master_password_hash: String,
+    pub key: String,
+    pub kdf: i32,
+    pub kdf_iterations: i32,
+    pub kdf_memory: Option<i32>,
+    pub kdf_parallelism: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateKeysRequest {
+    pub master_password_hash: String,
+    pub key: String,
+    pub private_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyPasswordRequest {
+    pub master_password_hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityStampRequest {
+    pub master_password_hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyRequest {
+    pub master_password_hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAccountRequest {
+    pub master_password_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ApiKeyResponse {
+    pub api_key: String,
+    pub object: String,
+}

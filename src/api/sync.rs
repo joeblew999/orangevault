@@ -8,7 +8,7 @@ use crate::models::cipher::CipherResponse;
 use crate::models::folder::FolderResponse;
 use crate::models::organization::{CollectionDetailsResponse, ProfileOrganizationResponse};
 use crate::models::send::SendResponse;
-use crate::models::sync::{DomainsResponse, GlobalDomain, SyncResponse};
+use crate::models::sync::{DomainsResponse, SyncResponse};
 use crate::models::user::ProfileResponse;
 
 pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Result<Response> {
@@ -74,6 +74,8 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
                 .map(|o| serde_json::to_value(o).unwrap_or_default())
                 .collect();
 
+            let two_factors = queries::find_two_factors_by_user(&db, &user.uuid).await?;
+
             let profile = ProfileResponse {
                 id: db_user.uuid.clone(),
                 name: db_user.name.clone(),
@@ -82,7 +84,7 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
                 premium: user.premium,
                 master_password_hint: None,
                 culture: "en-US".into(),
-                two_factor_enabled: false,
+                two_factor_enabled: !two_factors.is_empty(),
                 key: db_user.akey.clone().unwrap_or_default(),
                 private_key: db_user.private_key.clone(),
                 security_stamp: db_user.security_stamp.clone(),
@@ -114,18 +116,54 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
             let send_responses: Vec<SendResponse> =
                 sends.iter().map(SendResponse::from_db).collect();
 
+            let user_eq = queries::find_equivalent_domains_by_user(&db, &user.uuid).await?;
+            let excluded_globals: Vec<i32> = user_eq
+                .as_ref()
+                .and_then(|ed| ed.global_equiv_domains.as_ref())
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            let custom_domains: Vec<serde_json::Value> = user_eq
+                .as_ref()
+                .and_then(|ed| ed.custom_equiv_domains.as_ref())
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+
+            let globals = crate::models::sync::default_global_domains()
+                .into_iter()
+                .map(|mut g| {
+                    g.excluded = excluded_globals.contains(&g.r#type);
+                    g
+                })
+                .collect();
+
             let domains = DomainsResponse {
-                equivalent_domains: vec![],
-                global_equivalent_domains: default_global_domains(),
+                equivalent_domains: custom_domains,
+                global_equivalent_domains: globals,
                 object: "domains".into(),
             };
+
+            // Load organization policies for all confirmed orgs
+            let mut all_policies = Vec::new();
+            for m in &confirmed {
+                let org_policies = queries::find_policies_by_org(&db, &m.org_uuid).await?;
+                for p in &org_policies {
+                    all_policies.push(serde_json::json!({
+                        "Id": p.uuid,
+                        "OrganizationId": p.org_uuid,
+                        "Type": p.atype,
+                        "Data": p.data.as_ref().and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok()),
+                        "Enabled": p.enabled,
+                        "Object": "policy",
+                    }));
+                }
+            }
 
             let sync_resp = SyncResponse {
                 profile,
                 ciphers: cipher_responses,
                 folders: folder_responses,
                 collections: collections_resp,
-                policies: vec![],
+                policies: all_policies,
                 sends: send_responses,
                 domains,
                 object: "sync".into(),
@@ -135,54 +173,4 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
         }
         .await,
     )
-}
-
-fn default_global_domains() -> Vec<GlobalDomain> {
-    vec![
-        GlobalDomain {
-            r#type: 0,
-            domains: ["google.com", "youtube.com", "gmail.com", "googlemail.com"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            excluded: false,
-        },
-        GlobalDomain {
-            r#type: 1,
-            domains: ["apple.com", "icloud.com", "me.com"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            excluded: false,
-        },
-        GlobalDomain {
-            r#type: 2,
-            domains: [
-                "live.com",
-                "microsoft.com",
-                "microsoftonline.com",
-                "outlook.com",
-                "hotmail.com",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-            excluded: false,
-        },
-        GlobalDomain {
-            r#type: 3,
-            domains: [
-                "amazon.com",
-                "amazon.co.uk",
-                "amazon.ca",
-                "amazon.de",
-                "amazon.in",
-                "amazon.co.jp",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-            excluded: false,
-        },
-    ]
 }

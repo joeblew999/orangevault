@@ -2,10 +2,14 @@ use worker::{Request, Response, RouteContext};
 
 use crate::auth::guards::{auth_from_request, verify_master_password};
 use crate::config::RequestContext;
-use crate::db::models::Cipher;
+use crate::db::models::{Attachment, Cipher, Folder};
 use crate::db::queries;
 use crate::error::{self, AppError};
-use crate::models::cipher::{CipherRequest, CipherResponse};
+use crate::models::cipher::{
+    AttachmentRequestV2, AttachmentResponse, AttachmentUploadResponse, BulkIdsRequest,
+    BulkMoveRequest, CipherCollectionsRequest, CipherRequest, CipherResponse, ImportCiphersRequest,
+    format_size,
+};
 use crate::notifications::{self, UpdateType};
 use crate::util::{generate_uuid, now_utc};
 
@@ -344,4 +348,411 @@ pub async fn purge_ciphers(
         }
         .await,
     )
+}
+
+pub async fn bulk_move(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let body: BulkMoveRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            for cipher_id in &body.ids {
+                if let Some(cipher) = queries::find_cipher_by_uuid(&db, cipher_id).await? {
+                    if cipher.user_uuid.as_deref() != Some(&user.uuid) {
+                        continue;
+                    }
+                    queries::clear_folder_for_cipher(&db, cipher_id).await?;
+                    if let Some(ref folder_id) = body.folder_id {
+                        queries::set_folder_cipher(&db, cipher_id, folder_id).await?;
+                    }
+                }
+            }
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncVault,
+                &user.uuid,
+                serde_json::json!({}),
+            )
+            .await;
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+pub async fn bulk_soft_delete(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let body: BulkIdsRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            let now = now_utc();
+            for cipher_id in &body.ids {
+                if let Some(cipher) = queries::find_cipher_by_uuid(&db, cipher_id).await?
+                    && (cipher.user_uuid.as_deref() == Some(&user.uuid)
+                        || has_org_access(&db, &user.uuid, &cipher).await)
+                {
+                    queries::soft_delete_cipher(&db, cipher_id, &now).await?;
+                }
+            }
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncVault,
+                &user.uuid,
+                serde_json::json!({}),
+            )
+            .await;
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+pub async fn bulk_restore(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let body: BulkIdsRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            let now = now_utc();
+            for cipher_id in &body.ids {
+                if let Some(cipher) = queries::find_cipher_by_uuid(&db, cipher_id).await?
+                    && (cipher.user_uuid.as_deref() == Some(&user.uuid)
+                        || has_org_access(&db, &user.uuid, &cipher).await)
+                {
+                    queries::restore_cipher(&db, cipher_id, &now).await?;
+                }
+            }
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncVault,
+                &user.uuid,
+                serde_json::json!({}),
+            )
+            .await;
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+pub async fn import_ciphers(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let body: ImportCiphersRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            let now = now_utc();
+
+            let mut folder_uuids = Vec::new();
+            for folder_req in &body.folders {
+                let folder = Folder {
+                    uuid: generate_uuid(),
+                    user_uuid: user.uuid.clone(),
+                    name: folder_req.name.clone(),
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                };
+                queries::insert_folder(&db, &folder).await?;
+                folder_uuids.push(folder.uuid);
+            }
+
+            let mut cipher_uuids = Vec::new();
+            for cipher_req in &body.ciphers {
+                let cipher = Cipher {
+                    uuid: generate_uuid(),
+                    user_uuid: Some(user.uuid.clone()),
+                    organization_uuid: None,
+                    atype: cipher_req.r#type,
+                    name: cipher_req.name.clone(),
+                    notes: cipher_req.notes.clone(),
+                    fields: cipher_req.fields.as_ref().map(|v| v.to_string()),
+                    data: cipher_req.data_json(),
+                    key: cipher_req.key.clone(),
+                    password_history: cipher_req.password_history.as_ref().map(|v| v.to_string()),
+                    reprompt: cipher_req.reprompt,
+                    deleted_at: None,
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                };
+                queries::insert_cipher(&db, &cipher).await?;
+                cipher_uuids.push(cipher.uuid);
+            }
+
+            for rel in &body.folder_relationships {
+                if rel.key < cipher_uuids.len() && rel.value < folder_uuids.len() {
+                    queries::set_folder_cipher(
+                        &db,
+                        &cipher_uuids[rel.key],
+                        &folder_uuids[rel.value],
+                    )
+                    .await?;
+                }
+            }
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncVault,
+                &user.uuid,
+                serde_json::json!({}),
+            )
+            .await;
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+pub async fn post_cipher_collections(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let body: CipherCollectionsRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            queries::clear_cipher_collections(&db, &cipher.uuid).await?;
+            for col_id in &body.collection_ids {
+                queries::set_cipher_collection(&db, &cipher.uuid, col_id).await?;
+            }
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncCipherUpdate,
+                &cipher.uuid,
+                serde_json::json!({"Id": cipher.uuid, "RevisionDate": cipher.updated_at}),
+            )
+            .await;
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+pub async fn post_cipher_collections_admin(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    post_cipher_collections(req, ctx).await
+}
+
+// --- Attachments ---
+
+pub async fn post_attachment_v2(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let body: AttachmentRequestV2 = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let db = ctx.data.db()?;
+            let att_id = generate_uuid();
+
+            let attachment = Attachment {
+                id: att_id.clone(),
+                cipher_uuid: cipher.uuid.clone(),
+                file_name: Some(body.file_name),
+                file_size: Some(body.file_size),
+                akey: body.key,
+            };
+            queries::insert_attachment(&db, &attachment).await?;
+
+            let domain = ctx.data.domain()?;
+            let url = format!("{domain}/api/ciphers/{}/attachment/{att_id}", cipher.uuid);
+
+            let resp = AttachmentUploadResponse {
+                attachment_id: att_id,
+                url,
+                file_upload_type: 0,
+                cipher_id: cipher.uuid,
+                cipher_mini_response: None,
+                object: "attachment-upload".into(),
+            };
+
+            Ok(Response::from_json(&resp)?)
+        }
+        .await,
+    )
+}
+
+pub async fn upload_attachment(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let att_id = ctx
+                .param("att_id")
+                .ok_or(AppError::BadRequest("Missing attachment id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            let _attachment = queries::find_attachment_by_id(&db, &att_id)
+                .await?
+                .ok_or(AppError::NotFound("Attachment not found".into()))?;
+
+            let bytes = req
+                .bytes()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Failed to read body: {e}")))?;
+
+            let r2 = ctx.data.r2()?;
+            let key = format!("attachments/{}/{}", cipher.uuid, att_id);
+            r2.put(&key, bytes)
+                .execute()
+                .await
+                .map_err(|e| AppError::Internal(format!("R2 put failed: {e}")))?;
+
+            queries::update_cipher_date(&db, &cipher.uuid, &now_utc()).await?;
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+pub async fn get_attachment(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let att_id = ctx
+                .param("att_id")
+                .ok_or(AppError::BadRequest("Missing attachment id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            let attachment = queries::find_attachment_by_id(&db, &att_id)
+                .await?
+                .ok_or(AppError::NotFound("Attachment not found".into()))?;
+
+            if attachment.cipher_uuid != cipher.uuid {
+                return Err(AppError::Forbidden(
+                    "Attachment does not belong to this cipher".into(),
+                ));
+            }
+
+            let domain = ctx.data.domain()?;
+            let url = format!(
+                "{domain}/api/ciphers/{}/attachment/{att_id}/download",
+                cipher.uuid
+            );
+
+            Ok(Response::from_json(&AttachmentResponse {
+                id: attachment.id,
+                file_name: attachment.file_name,
+                size: attachment.file_size,
+                size_name: format_size(attachment.file_size.unwrap_or(0)),
+                key: attachment.akey,
+                url,
+                object: "attachment".into(),
+            })?)
+        }
+        .await,
+    )
+}
+
+pub async fn delete_attachment(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let att_id = ctx
+                .param("att_id")
+                .ok_or(AppError::BadRequest("Missing attachment id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            let attachment = queries::find_attachment_by_id(&db, &att_id)
+                .await?
+                .ok_or(AppError::NotFound("Attachment not found".into()))?;
+
+            if attachment.cipher_uuid != cipher.uuid {
+                return Err(AppError::Forbidden(
+                    "Attachment does not belong to this cipher".into(),
+                ));
+            }
+
+            if let Ok(r2) = ctx.data.r2() {
+                let key = format!("attachments/{}/{}", cipher.uuid, att_id);
+                let _ = r2.delete(&key).await;
+            }
+
+            queries::delete_attachment(&db, &att_id).await?;
+            queries::update_cipher_date(&db, &cipher.uuid, &now_utc()).await?;
+
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+async fn has_org_access(db: &worker::D1Database, user_uuid: &str, cipher: &Cipher) -> bool {
+    if let Some(ref org_uuid) = cipher.organization_uuid
+        && let Ok(Some(m)) = queries::find_membership(db, user_uuid, org_uuid).await
+    {
+        return m.status == 2;
+    }
+    false
 }

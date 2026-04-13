@@ -140,3 +140,86 @@ impl CipherRequest {
         val.map(|v| v.to_string()).unwrap_or_else(|| "{}".into())
     }
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkIdsRequest {
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkMoveRequest {
+    pub ids: Vec<String>,
+    pub folder_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCiphersRequest {
+    pub ciphers: Vec<CipherRequest>,
+    pub folders: Vec<ImportFolderRequest>,
+    #[serde(default)]
+    pub folder_relationships: Vec<FolderRelationship>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportFolderRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FolderRelationship {
+    pub key: usize,
+    pub value: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CipherCollectionsRequest {
+    pub collection_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct AttachmentResponse {
+    pub id: String,
+    pub file_name: Option<String>,
+    pub size: Option<i64>,
+    pub size_name: String,
+    pub key: Option<String>,
+    pub url: String,
+    pub object: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentRequestV2 {
+    pub file_name: String,
+    pub file_size: i64,
+    pub key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct AttachmentUploadResponse {
+    pub attachment_id: String,
+    pub url: String,
+    pub file_upload_type: i32,
+    pub cipher_id: String,
+    pub cipher_mini_response: Option<serde_json::Value>,
+    pub object: String,
+}
+
+pub fn format_size(bytes: i64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} Bytes")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.2} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
