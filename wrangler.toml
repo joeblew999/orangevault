@@ -8,7 +8,6 @@ command = "cargo install -q worker-build@^0.8 && worker-build --release"
 [[d1_databases]]
 binding = "DB"
 database_name = "orangevault"
-database_id = "placeholder"
 
 [[r2_buckets]]
 binding = "FILES"
@@ -16,7 +15,6 @@ bucket_name = "orangevault-files"
 
 [[kv_namespaces]]
 binding = "CACHE"
-id = "placeholder"
 
 [durable_objects]
 bindings = [
