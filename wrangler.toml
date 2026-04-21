@@ -3,7 +3,7 @@ main = "build/worker/shim.mjs"
 compatibility_date = "2026-04-01"
 
 [build]
-command = "cargo install -q worker-build@^0.7 && worker-build --release"
+command = "cargo install -q worker-build@^0.8 && worker-build --release"
 
 [[d1_databases]]
 binding = "DB"
