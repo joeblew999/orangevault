@@ -115,6 +115,62 @@ pub async fn get_ciphers(
     )
 }
 
+/// Admin-console listing of every cipher in an org, with collection links.
+/// Callers need admin/owner or `access_all` — regular members use `/api/sync`
+/// or `/api/ciphers` and only see ciphers in collections they're assigned to.
+pub async fn get_org_details(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+
+            let url = req.url()?;
+            let org_id = url
+                .query_pairs()
+                .find(|(k, _)| k == "organizationId")
+                .map(|(_, v)| v.to_string())
+                .ok_or(AppError::BadRequest("Missing organizationId".into()))?;
+
+            let db = ctx.data.db()?;
+            let membership = queries::find_membership(&db, &user.uuid, &org_id)
+                .await?
+                .ok_or(AppError::NotFound("Resource not found".into()))?;
+            if membership.status != 2 || (membership.atype > 1 && !membership.access_all) {
+                return Err(AppError::NotFound("Resource not found".into()));
+            }
+
+            let ciphers = queries::find_accessible_org_ciphers(&db, &user.uuid, &org_id).await?;
+            let cipher_collections = queries::find_cipher_collections_by_org(&db, &org_id).await?;
+
+            let mut by_cipher: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            for cc in cipher_collections {
+                by_cipher
+                    .entry(cc.cipher_uuid)
+                    .or_default()
+                    .push(cc.collection_uuid);
+            }
+
+            let data: Vec<CipherResponse> = ciphers
+                .iter()
+                .map(|c| {
+                    let col_ids = by_cipher.remove(&c.uuid).unwrap_or_default();
+                    CipherResponse::from_cipher_resolved(c, false, None, col_ids)
+                })
+                .collect();
+
+            Ok(Response::from_json(&serde_json::json!({
+                "Data": data,
+                "Object": "list",
+                "ContinuationToken": null,
+            }))?)
+        }
+        .await,
+    )
+}
+
 pub async fn get_cipher(
     req: Request,
     ctx: RouteContext<RequestContext>,
@@ -134,6 +190,101 @@ pub async fn get_cipher(
                 &folder_ciphers,
                 &cipher_collections,
             );
+            Ok(Response::from_json(&resp)?)
+        }
+        .await,
+    )
+}
+
+/// `POST /ciphers/create` (and `/ciphers/admin`): create a new cipher already
+/// assigned to an organization and a set of collections in one call. Used by
+/// the web vault when an admin adds a login to an org, and when cloning an
+/// org cipher. If `organizationId` is null, falls back to a personal cipher.
+pub async fn post_cipher_create(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let body: crate::models::organization::ShareCipherRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+
+            let now = now_utc();
+            let cipher_uuid = generate_uuid();
+            let db = ctx.data.db()?;
+
+            let org_uuid = body.cipher.organization_id.clone();
+            if let Some(ref org) = org_uuid {
+                let m = queries::find_membership(&db, &user.uuid, org)
+                    .await?
+                    .ok_or(AppError::Forbidden("Not a member".into()))?;
+                if m.status != 2 {
+                    return Err(AppError::Forbidden("Membership not confirmed".into()));
+                }
+            }
+
+            let is_org_cipher = org_uuid.is_some();
+            let cipher = Cipher {
+                uuid: cipher_uuid.clone(),
+                user_uuid: if is_org_cipher {
+                    None
+                } else {
+                    Some(user.uuid.clone())
+                },
+                organization_uuid: org_uuid.clone(),
+                atype: body.cipher.r#type,
+                name: body.cipher.name.clone(),
+                notes: body.cipher.notes.clone(),
+                fields: body.cipher.fields.as_ref().map(|v| v.to_string()),
+                data: body.cipher.data_json(),
+                key: body.cipher.key.clone(),
+                password_history: body.cipher.password_history.as_ref().map(|v| v.to_string()),
+                reprompt: body.cipher.reprompt,
+                deleted_at: None,
+                created_at: now.clone(),
+                updated_at: now,
+            };
+
+            queries::insert_cipher(&db, &cipher).await?;
+
+            let folder_id = if is_org_cipher {
+                for col_id in &body.collection_ids {
+                    queries::set_cipher_collection(&db, &cipher.uuid, col_id).await?;
+                }
+                None
+            } else {
+                if let Some(ref folder_id) = body.cipher.folder_id {
+                    queries::set_folder_cipher(&db, &cipher.uuid, folder_id).await?;
+                }
+                body.cipher.folder_id.clone()
+            };
+
+            let is_fav = !is_org_cipher && body.cipher.favorite.unwrap_or(false);
+            if is_fav {
+                queries::set_favorite(&db, &user.uuid, &cipher.uuid).await?;
+            }
+
+            let collection_ids = if is_org_cipher {
+                body.collection_ids.clone()
+            } else {
+                vec![]
+            };
+
+            let resp =
+                CipherResponse::from_cipher_resolved(&cipher, is_fav, folder_id, collection_ids);
+
+            notifications::send_notification(
+                &ctx.env,
+                &user.uuid,
+                UpdateType::SyncCipherCreate,
+                &cipher.uuid,
+                serde_json::json!({"Id": cipher.uuid, "RevisionDate": cipher.updated_at}),
+            )
+            .await;
+
             Ok(Response::from_json(&resp)?)
         }
         .await,

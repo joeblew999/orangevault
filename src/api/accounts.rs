@@ -545,6 +545,25 @@ pub async fn get_revision_date(
     )
 }
 
+// Passwordless-login approvals. Not implemented — clients poll this during
+// login and expect a Bitwarden-shaped empty list.
+pub async fn get_auth_requests_pending(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let _user = auth_from_request(&req, &ctx.data).await?;
+            Ok(Response::from_json(&serde_json::json!({
+                "Data": [],
+                "Object": "list",
+                "ContinuationToken": null,
+            }))?)
+        }
+        .await,
+    )
+}
+
 pub async fn get_domains(
     req: Request,
     ctx: RouteContext<RequestContext>,

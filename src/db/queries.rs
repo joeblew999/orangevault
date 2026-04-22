@@ -705,6 +705,27 @@ pub async fn find_user_collections_by_collection(
         .map_err(d1_err)
 }
 
+/// All users_collections rows for every collection in `org_uuid`. Used to build
+/// the per-collection access lists in a single round-trip.
+pub async fn find_user_collections_by_org(
+    db: &D1Database,
+    org_uuid: &str,
+) -> Result<Vec<UserCollection>> {
+    db.prepare(
+        "SELECT uc.user_uuid, uc.collection_uuid, uc.read_only, uc.hide_passwords, uc.manage
+         FROM users_collections uc
+         INNER JOIN collections c ON c.uuid = uc.collection_uuid
+         WHERE c.org_uuid = ?1",
+    )
+    .bind_refs([&D1Type::Text(org_uuid)])
+    .map_err(d1_err)?
+    .all()
+    .await
+    .map_err(d1_err)?
+    .results::<UserCollection>()
+    .map_err(d1_err)
+}
+
 pub async fn update_collection_name(
     db: &D1Database,
     uuid: &str,

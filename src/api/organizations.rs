@@ -944,6 +944,173 @@ pub async fn put_policy(
     )
 }
 
+// --- Organization keys ---
+
+/// Bitwarden's legacy `/keys` endpoint. New clients call `/public-key`; this one
+/// additionally returns the (encrypted) private key, which the sharing flow
+/// reads to wrap cipher keys for the org.
+pub async fn get_organization_keys(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            require_member(&db, &user.uuid, &org_id).await?;
+
+            let org = queries::find_organization_by_uuid(&db, &org_id)
+                .await?
+                .ok_or(AppError::NotFound("Organization not found".into()))?;
+
+            Ok(Response::from_json(&serde_json::json!({
+                "Object": "organizationKeys",
+                "PublicKey": org.public_key,
+                "PrivateKey": org.private_key,
+            }))?)
+        }
+        .await,
+    )
+}
+
+// --- Collections details (admin console) ---
+
+/// Per-collection access view used by the admin console: for every collection
+/// in the org, list the member assignments plus whether the requesting user
+/// has access. Groups are always empty because we don't implement them.
+pub async fn get_collections_details(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            let me = require_member(&db, &user.uuid, &org_id).await?;
+
+            let collections = queries::find_collections_by_org(&db, &org_id).await?;
+            let memberships = queries::find_memberships_by_org(&db, &org_id).await?;
+            let user_collections = queries::find_user_collections_by_org(&db, &org_id).await?;
+
+            // Bitwarden clients key Users entries off membership uuid
+            // (organizationUserId), not user_uuid.
+            let user_to_member: std::collections::HashMap<&str, &str> = memberships
+                .iter()
+                .filter(|m| m.status == 2)
+                .map(|m| (m.user_uuid.as_str(), m.uuid.as_str()))
+                .collect();
+
+            let manage_all_members: Vec<serde_json::Value> = memberships
+                .iter()
+                .filter(|m| m.status == 2 && (m.atype <= 1 || m.access_all))
+                .map(|m| {
+                    serde_json::json!({
+                        "Id": m.uuid,
+                        "ReadOnly": false,
+                        "HidePasswords": false,
+                        "Manage": true,
+                    })
+                })
+                .collect();
+
+            let mut by_collection: std::collections::HashMap<&str, Vec<serde_json::Value>> =
+                std::collections::HashMap::new();
+            let mut caller_collections: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
+            for uc in &user_collections {
+                if uc.user_uuid == user.uuid {
+                    caller_collections.insert(uc.collection_uuid.as_str());
+                }
+                if let Some(mid) = user_to_member.get(uc.user_uuid.as_str()) {
+                    by_collection
+                        .entry(uc.collection_uuid.as_str())
+                        .or_default()
+                        .push(serde_json::json!({
+                            "Id": mid,
+                            "ReadOnly": uc.read_only,
+                            "HidePasswords": uc.hide_passwords,
+                            "Manage": uc.manage,
+                        }));
+                }
+            }
+
+            let caller_has_full_access = me.atype <= 1 || me.access_all;
+
+            let data: Vec<serde_json::Value> = collections
+                .iter()
+                .map(|col| {
+                    let mut users = by_collection.remove(col.uuid.as_str()).unwrap_or_default();
+                    users.extend(manage_all_members.iter().cloned());
+
+                    let assigned =
+                        caller_has_full_access || caller_collections.contains(col.uuid.as_str());
+
+                    serde_json::json!({
+                        "Id": col.uuid,
+                        "OrganizationId": col.org_uuid,
+                        "Name": col.name,
+                        "ExternalId": col.external_id,
+                        "Assigned": assigned,
+                        "Users": users,
+                        "Groups": [],
+                        "ReadOnly": false,
+                        "HidePasswords": false,
+                        "Manage": caller_has_full_access,
+                        "Object": "collectionAccessDetails",
+                    })
+                })
+                .collect();
+
+            Ok(Response::from_json(&serde_json::json!({
+                "Data": data,
+                "Object": "list",
+                "ContinuationToken": null,
+            }))?)
+        }
+        .await,
+    )
+}
+
+// --- Groups (stub: feature not implemented) ---
+
+/// Clients always probe `/groups` even when the org doesn't advertise
+/// `UseGroups`; returning an empty list keeps them happy. See vaultwarden
+/// `get_groups_data` for the same behavior.
+pub async fn get_groups(
+    req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            let user = auth_from_request(&req, &ctx.data).await?;
+            let org_id = ctx
+                .param("org_id")
+                .ok_or(AppError::BadRequest("Missing org_id".into()))?
+                .clone();
+
+            let db = ctx.data.db()?;
+            require_member(&db, &user.uuid, &org_id).await?;
+
+            Ok(Response::from_json(&serde_json::json!({
+                "Data": [],
+                "Object": "list",
+                "ContinuationToken": null,
+            }))?)
+        }
+        .await,
+    )
+}
+
 // --- Cipher sharing ---
 
 pub async fn share_cipher(

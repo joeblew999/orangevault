@@ -75,6 +75,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/api/settings/domains", api::accounts::get_domains)
         .post_async("/api/settings/domains", api::accounts::post_domains)
         .put_async("/api/settings/domains", api::accounts::post_domains)
+        .get_async(
+            "/api/auth-requests/pending",
+            api::accounts::get_auth_requests_pending,
+        )
+        .get_async(
+            "/api/auth-requests",
+            api::accounts::get_auth_requests_pending,
+        )
         .get_async("/api/sync", api::sync::sync)
         .get_async("/api/folders", api::folders::get_folders)
         .post_async("/api/folders", api::folders::post_folder)
@@ -82,7 +90,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .delete_async("/api/folders/:id", api::folders::delete_folder)
         // Ciphers: static paths must precede parameterized :id routes
         .get_async("/api/ciphers", api::ciphers::get_ciphers)
+        .get_async(
+            "/api/ciphers/organization-details",
+            api::ciphers::get_org_details,
+        )
         .post_async("/api/ciphers", api::ciphers::post_cipher)
+        .post_async("/api/ciphers/create", api::ciphers::post_cipher_create)
+        .post_async("/api/ciphers/admin", api::ciphers::post_cipher_create)
         .post_async("/api/ciphers/purge", api::ciphers::purge_ciphers)
         .put_async("/api/ciphers/move", api::ciphers::bulk_move)
         .put_async("/api/ciphers/delete", api::ciphers::bulk_soft_delete)
@@ -115,6 +129,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .put_async("/api/ciphers/:id/share", api::organizations::share_cipher)
         .post_async("/api/ciphers/:id/share", api::organizations::share_cipher)
         .get_async("/api/ciphers/:id", api::ciphers::get_cipher)
+        .get_async("/api/ciphers/:id/details", api::ciphers::get_cipher)
         .put_async("/api/ciphers/:id", api::ciphers::put_cipher)
         .delete_async("/api/ciphers/:id", api::ciphers::delete_cipher)
         .put_async("/api/ciphers/:id/delete", api::ciphers::soft_delete_cipher)
@@ -146,6 +161,25 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .delete_async(
             "/api/organizations/:org_id",
             api::organizations::delete_organization,
+        )
+        .get_async(
+            "/api/organizations/:org_id/keys",
+            api::organizations::get_organization_keys,
+        )
+        .get_async(
+            "/api/organizations/:org_id/groups",
+            api::organizations::get_groups,
+        )
+        .get_async(
+            "/api/organizations/:org_id/groups/details",
+            api::organizations::get_groups,
+        )
+        // Static `/collections/details` must precede the `/collections/:col_id`
+        // routes below, otherwise `details` is captured as a col_id and clients
+        // hit 405/404.
+        .get_async(
+            "/api/organizations/:org_id/collections/details",
+            api::organizations::get_collections_details,
         )
         .get_async(
             "/api/organizations/:org_id/collections",
