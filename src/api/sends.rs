@@ -676,7 +676,7 @@ async fn verify_send_password(send: &DbSend, password: &str) -> crate::error::Re
         .unwrap_or(SEND_PASSWORD_ITERATIONS as i32) as u32;
 
     let computed = pbkdf2::pbkdf2_sha256(password.as_bytes(), &salt, iterations, 32).await?;
-    Ok(computed == stored_hash)
+    Ok(crate::crypto::constant_time_eq(&computed, &stored_hash))
 }
 
 /// Extract the file ID from the send data JSON.

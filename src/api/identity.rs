@@ -5,8 +5,8 @@ use crate::auth::guards::verify_master_password;
 use crate::auth::jwt;
 use crate::config::RequestContext;
 use crate::crypto::pbkdf2::SERVER_PASSWORD_ITERATIONS;
-use crate::crypto::totp::{base32_decode, constant_time_eq, validate_totp};
-use crate::crypto::{pbkdf2, random};
+use crate::crypto::totp::{base32_decode, validate_totp};
+use crate::crypto::{constant_time_eq, pbkdf2, random};
 use crate::db::models::{Device, User};
 use crate::db::queries;
 use crate::error::{self, AppError};
@@ -248,6 +248,14 @@ async fn handle_password_grant(
                         let stored = user.totp_recover.as_deref().unwrap_or("");
                         let token_norm = token.replace(' ', "").to_uppercase();
                         let stored_norm = stored.replace(' ', "").to_uppercase();
+                        // Defense in depth: if totp_recover ever becomes
+                        // absent while 2FA is still enabled (direct DB edit,
+                        // lost write, bug), the comparison below would accept
+                        // an empty submitted token. Reject before the
+                        // constant-time compare so that path is unreachable.
+                        if stored_norm.is_empty() || token_norm.is_empty() {
+                            return Err(oauth_invalid_grant("Invalid recovery code"));
+                        }
                         if !constant_time_eq(token_norm.as_bytes(), stored_norm.as_bytes()) {
                             return Err(oauth_invalid_grant("Invalid recovery code"));
                         }
@@ -271,13 +279,19 @@ async fn handle_password_grant(
         }
     }
 
-    // Create or update device
-    let device_uuid = form
-        .device_identifier
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(generate_uuid);
+    // Create or update device. If the caller's device_identifier already
+    // belongs to another user, don't trust it — `upsert_device` would
+    // otherwise keep the existing `user_uuid` while overwriting that user's
+    // refresh_token, effectively logging them out and creating a mismatched
+    // row. Mint a fresh UUID in that case so the login proceeds cleanly and
+    // the victim's session is left alone.
+    let device_uuid = match form.device_identifier.as_deref().filter(|s| !s.is_empty()) {
+        Some(id) => match queries::find_device_by_uuid(db, id).await? {
+            Some(existing) if existing.user_uuid != user.uuid => generate_uuid(),
+            _ => id.to_string(),
+        },
+        None => generate_uuid(),
+    };
     let now = now_utc();
 
     // Sign tokens

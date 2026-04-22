@@ -47,7 +47,7 @@ pub async fn verify_master_password(
     )
     .await?;
     let stored = crate::util::base64_decode(&user.password_hash)?;
-    Ok(computed == stored)
+    Ok(crate::crypto::constant_time_eq(&computed, &stored))
 }
 
 /// Extract the Bearer token from an Authorization header value.

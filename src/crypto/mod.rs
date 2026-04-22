@@ -4,6 +4,8 @@ pub mod random;
 pub mod rsa;
 pub mod totp;
 
+pub use totp::constant_time_eq;
+
 use js_sys::{Object, Reflect};
 use wasm_bindgen::JsValue;
 
