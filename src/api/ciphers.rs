@@ -11,7 +11,9 @@ use crate::models::cipher::{
     format_size,
 };
 use crate::notifications::{self, UpdateType};
-use crate::util::{generate_uuid, now_utc};
+use crate::util::{
+    enforce_body_len, enforce_content_length, enforce_declared_size, generate_uuid, now_utc,
+};
 
 /// Whether a caller needs read-only access or the ability to mutate a cipher.
 /// `Write` additionally excludes members whose only collection grants are
@@ -637,6 +639,8 @@ pub async fn post_attachment_v2(
                 .await
                 .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
 
+            enforce_declared_size(body.file_size)?;
+
             let db = ctx.data.db()?;
             let att_id = generate_uuid();
 
@@ -690,10 +694,12 @@ pub async fn upload_attachment(
                 ));
             }
 
+            enforce_content_length(&req)?;
             let bytes = req
                 .bytes()
                 .await
                 .map_err(|e| AppError::BadRequest(format!("Failed to read body: {e}")))?;
+            enforce_body_len(bytes.len())?;
 
             let r2 = ctx.data.r2()?;
             let key = format!("attachments/{}/{}", cipher.uuid, att_id);

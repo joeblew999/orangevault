@@ -15,6 +15,8 @@ pub enum AppError {
     Forbidden(String),
     /// 409 Conflict
     Conflict(String),
+    /// 413 Payload Too Large
+    PayloadTooLarge(String),
     /// 429 Too Many Requests
     TooManyRequests,
     /// 500 Internal Server Error
@@ -83,6 +85,10 @@ impl AppError {
             AppError::Conflict(msg) => {
                 let body = api_error_json(msg);
                 Response::from_json(&body).map(|r| r.with_status(409))
+            }
+            AppError::PayloadTooLarge(msg) => {
+                let body = api_error_json(msg);
+                Response::from_json(&body).map(|r| r.with_status(413))
             }
             AppError::TooManyRequests => {
                 let body = api_error_json("Too many requests.");
@@ -156,6 +162,7 @@ impl std::fmt::Display for AppError {
             AppError::NotFound(msg) => write!(f, "Not found: {msg}"),
             AppError::Forbidden(msg) => write!(f, "Forbidden: {msg}"),
             AppError::Conflict(msg) => write!(f, "Conflict: {msg}"),
+            AppError::PayloadTooLarge(msg) => write!(f, "Payload too large: {msg}"),
             AppError::TooManyRequests => write!(f, "Too many requests"),
             AppError::Internal(msg) => write!(f, "Internal error: {msg}"),
             AppError::OAuth {

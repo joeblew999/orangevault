@@ -13,7 +13,10 @@ use crate::models::send::{
     SendFileDownloadResponse, SendFileUploadResponse, SendRequest, SendResponse,
 };
 use crate::notifications::{self, UpdateType};
-use crate::util::{base64_encode, base64url_decode, generate_uuid, now_utc};
+use crate::util::{
+    base64_encode, base64url_decode, enforce_body_len, enforce_content_length,
+    enforce_declared_size, generate_uuid, now_utc,
+};
 
 const SEND_PASSWORD_ITERATIONS: u32 = 100_000;
 
@@ -175,6 +178,12 @@ pub async fn post_send_file_v2(
                 return Err(AppError::BadRequest("Expected file send type".into()));
             }
 
+            // Reject the declared size upfront so we never reserve an R2 slot
+            // for a payload we'd reject at upload time.
+            if let Some(size) = body.file_length {
+                enforce_declared_size(size)?;
+            }
+
             let file_data = body.file.as_ref().ok_or(AppError::BadRequest(
                 "Missing file data for file send".into(),
             ))?;
@@ -259,10 +268,12 @@ pub async fn post_send_file(
                 return Err(AppError::BadRequest("File ID mismatch".into()));
             }
 
+            enforce_content_length(&req)?;
             let bytes = req
                 .bytes()
                 .await
                 .map_err(|e| AppError::Internal(format!("Failed to read body: {e}")))?;
+            enforce_body_len(bytes.len())?;
 
             let r2 = ctx.data.r2()?;
             let r2_key = format!("sends/{}/{file_id}", send.uuid);
