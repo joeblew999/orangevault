@@ -19,17 +19,19 @@ pub async fn generate_totp(secret: &[u8], time: u64) -> Result<String> {
 }
 
 /// Validate a TOTP code with ±1 step drift tolerance.
-/// Returns true if valid for any of the 3 time windows.
-pub async fn validate_totp(secret: &[u8], code: &str, time: u64) -> Result<bool> {
-    // Check current step, one step back, one step forward
+/// Returns the matched step (time / 30) on success, or None if invalid.
+/// Callers must reject the code if the returned step has already been used
+/// (`step <= two_factor.last_used`) to prevent replay within the window.
+pub async fn validate_totp(secret: &[u8], code: &str, time: u64) -> Result<Option<i64>> {
+    let base_step = (time / TOTP_PERIOD) as i64;
     for offset in [0i64, -1, 1] {
         let check_time = (time as i64 + offset * TOTP_PERIOD as i64) as u64;
         let expected = generate_totp(secret, check_time).await?;
         if constant_time_eq(code.as_bytes(), expected.as_bytes()) {
-            return Ok(true);
+            return Ok(Some(base_step + offset));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// Dynamic truncation per RFC 4226.

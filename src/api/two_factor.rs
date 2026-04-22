@@ -151,20 +151,26 @@ pub async fn post_authenticator(
 
             let secret_bytes = base32_decode(&body.key)?;
             let now = crate::util::now_epoch_secs() as u64;
-            let valid = validate_totp(&secret_bytes, &body.token, now).await?;
-            if !valid {
-                return Err(AppError::BadRequest("Invalid TOTP code".into()));
-            }
+            let step = validate_totp(&secret_bytes, &body.token, now)
+                .await?
+                .ok_or(AppError::BadRequest("Invalid TOTP code".into()))?;
 
-            // Upsert the TOTP two-factor record
+            // Upsert the TOTP two-factor record. Anchor `last_used` to the step
+            // the user just proved possession of, so the same code cannot be
+            // replayed against /identity/connect/token within the window.
             let existing = queries::find_two_factor_by_user_and_type(&db, &user.uuid, 0).await?;
+            if let Some(ref e) = existing
+                && step <= e.last_used.unwrap_or(0)
+            {
+                return Err(AppError::BadRequest("TOTP code already used".into()));
+            }
             let tf = TwoFactor {
                 uuid: existing.map(|e| e.uuid).unwrap_or_else(generate_uuid),
                 user_uuid: user.uuid.clone(),
                 atype: 0, // Authenticator
                 enabled: true,
                 data: body.key.clone(),
-                last_used: Some(now as i64),
+                last_used: Some(step),
             };
             queries::upsert_two_factor(&db, &tf).await?;
 

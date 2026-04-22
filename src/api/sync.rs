@@ -39,12 +39,19 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
                 if let Some(org) = queries::find_organization_by_uuid(&db, &m.org_uuid).await? {
                     profile_orgs.push(ProfileOrganizationResponse::from_membership(&org, m));
 
-                    let org_ciphers = queries::find_org_ciphers(&db, &m.org_uuid).await?;
+                    let org_ciphers =
+                        queries::find_accessible_org_ciphers(&db, &user.uuid, &m.org_uuid).await?;
+                    let accessible: std::collections::HashSet<String> =
+                        org_ciphers.iter().map(|c| c.uuid.clone()).collect();
                     ciphers.extend(org_ciphers);
 
                     let org_cipher_collections =
                         queries::find_cipher_collections_by_org(&db, &m.org_uuid).await?;
-                    all_cipher_collections.extend(org_cipher_collections);
+                    all_cipher_collections.extend(
+                        org_cipher_collections
+                            .into_iter()
+                            .filter(|cc| accessible.contains(&cc.cipher_uuid)),
+                    );
 
                     let org_collections =
                         queries::find_collections_by_org(&db, &m.org_uuid).await?;
@@ -53,7 +60,7 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
                         let uc = user_collections
                             .iter()
                             .find(|uc| uc.collection_uuid == col.uuid);
-                        if m.access_all || uc.is_some() {
+                        if m.access_all || m.atype <= 1 || uc.is_some() {
                             collections_resp.push(CollectionDetailsResponse {
                                 id: col.uuid.clone(),
                                 organization_id: col.org_uuid.clone(),
@@ -61,7 +68,9 @@ pub async fn sync(req: Request, ctx: RouteContext<RequestContext>) -> worker::Re
                                 external_id: col.external_id.clone(),
                                 read_only: uc.map(|u| u.read_only).unwrap_or(false),
                                 hide_passwords: uc.map(|u| u.hide_passwords).unwrap_or(false),
-                                manage: uc.map(|u| u.manage).unwrap_or(m.access_all),
+                                manage: uc
+                                    .map(|u| u.manage)
+                                    .unwrap_or(m.access_all || m.atype <= 1),
                                 object: "collectionDetails".into(),
                             });
                         }

@@ -28,7 +28,8 @@ pub async fn hub(req: Request, ctx: RouteContext<RequestContext>) -> worker::Res
                 .ok_or_else(|| AppError::Unauthorized("Missing access token".into()))?;
 
             let kv = ctx.data.kv()?;
-            let user = validate_access_token(&format!("Bearer {token}"), &kv).await?;
+            let db = ctx.data.db()?;
+            let user = validate_access_token(&format!("Bearer {token}"), &kv, &db).await?;
 
             // Route to user's Durable Object
             let ns = ctx

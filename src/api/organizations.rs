@@ -549,7 +549,7 @@ pub async fn update_member(
                 .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
 
             let db = ctx.data.db()?;
-            require_admin(&db, &user.uuid, &org_id).await?;
+            let requester = require_admin(&db, &user.uuid, &org_id).await?;
 
             let membership = queries::find_membership_by_uuid(&db, &member_id)
                 .await?
@@ -557,6 +557,23 @@ pub async fn update_member(
 
             if membership.org_uuid != org_id {
                 return Err(AppError::NotFound("Membership not found".into()));
+            }
+
+            // Only Owners can edit other Owners, and only Owners can grant or
+            // revoke Owner/Admin privileges. Admins editing lower-privileged
+            // roles (User/Manager) stays allowed.
+            if membership.atype == 0 && requester.atype != 0 {
+                return Err(AppError::Forbidden(
+                    "Only Owners can edit Owner users".into(),
+                ));
+            }
+            if body.r#type != membership.atype
+                && (membership.atype <= 1 || body.r#type <= 1)
+                && requester.atype != 0
+            {
+                return Err(AppError::Forbidden(
+                    "Only Owners can grant or remove Owner or Admin privileges".into(),
+                ));
             }
 
             // Prevent demoting the last owner
@@ -615,7 +632,7 @@ pub async fn remove_member(
                 .clone();
 
             let db = ctx.data.db()?;
-            require_admin(&db, &user.uuid, &org_id).await?;
+            let requester = require_admin(&db, &user.uuid, &org_id).await?;
 
             let membership = queries::find_membership_by_uuid(&db, &member_id)
                 .await?
@@ -623,6 +640,13 @@ pub async fn remove_member(
 
             if membership.org_uuid != org_id {
                 return Err(AppError::NotFound("Membership not found".into()));
+            }
+
+            // Only Owners may remove other Owners.
+            if membership.atype == 0 && requester.atype != 0 {
+                return Err(AppError::Forbidden(
+                    "Only Owners can remove Owner users".into(),
+                ));
             }
 
             // Prevent removing the last owner

@@ -149,6 +149,20 @@ pub async fn update_device_refresh_token(
     Ok(())
 }
 
+/// Delete every device row for a user, invalidating all outstanding refresh
+/// tokens. Call this alongside any operation that rotates `security_stamp`
+/// (password change, KDF change, key rotation, explicit stamp bump) so the
+/// stamp's access-token invalidation is matched by refresh-token invalidation.
+pub async fn delete_devices_for_user(db: &D1Database, user_uuid: &str) -> Result<()> {
+    db.prepare("DELETE FROM devices WHERE user_uuid = ?1")
+        .bind_refs([&D1Type::Text(user_uuid)])
+        .map_err(d1_err)?
+        .run()
+        .await
+        .map_err(d1_err)?;
+    Ok(())
+}
+
 // --- Cipher queries ---
 
 pub async fn find_ciphers_by_user(db: &D1Database, user_uuid: &str) -> Result<Vec<Cipher>> {
@@ -839,6 +853,30 @@ pub async fn find_user_collections_by_user(
         .map_err(d1_err)
 }
 
+/// Return every `users_collections` row linking `user_uuid` to a collection
+/// that contains `cipher_uuid`. Empty result means the user has no
+/// collection-level access to the cipher; a row with `read_only = 0` grants
+/// write access. Owner/Admin/`access_all` is handled separately in the
+/// caller and doesn't go through this query.
+pub async fn find_user_cipher_collection_access(
+    db: &D1Database,
+    user_uuid: &str,
+    cipher_uuid: &str,
+) -> Result<Vec<UserCollection>> {
+    db.prepare(
+        "SELECT uc.* FROM users_collections uc
+         JOIN ciphers_collections cc ON cc.collection_uuid = uc.collection_uuid
+         WHERE cc.cipher_uuid = ?1 AND uc.user_uuid = ?2",
+    )
+    .bind_refs([&D1Type::Text(cipher_uuid), &D1Type::Text(user_uuid)])
+    .map_err(d1_err)?
+    .all()
+    .await
+    .map_err(d1_err)?
+    .results::<UserCollection>()
+    .map_err(d1_err)
+}
+
 // --- Cipher-collection queries ---
 
 pub async fn set_cipher_collection(
@@ -882,15 +920,39 @@ pub async fn find_cipher_collections(
         .map_err(d1_err)
 }
 
-pub async fn find_org_ciphers(db: &D1Database, org_uuid: &str) -> Result<Vec<Cipher>> {
-    db.prepare("SELECT * FROM ciphers WHERE organization_uuid = ?1")
-        .bind_refs([&D1Type::Text(org_uuid)])
-        .map_err(d1_err)?
-        .all()
-        .await
-        .map_err(d1_err)?
-        .results::<Cipher>()
-        .map_err(d1_err)
+/// Return the ciphers in `org_uuid` that `user_uuid` is allowed to see. Owner
+/// and Admin memberships, and any membership with `access_all = 1`, see every
+/// cipher in the org; other members see only ciphers in collections they have
+/// a `users_collections` row for. Unconfirmed members see nothing.
+pub async fn find_accessible_org_ciphers(
+    db: &D1Database,
+    user_uuid: &str,
+    org_uuid: &str,
+) -> Result<Vec<Cipher>> {
+    db.prepare(
+        "SELECT DISTINCT c.* FROM ciphers c
+         JOIN memberships m
+           ON m.org_uuid = c.organization_uuid
+          AND m.user_uuid = ?1
+          AND m.status = 2
+         LEFT JOIN ciphers_collections cc ON cc.cipher_uuid = c.uuid
+         LEFT JOIN users_collections uc
+           ON uc.collection_uuid = cc.collection_uuid
+          AND uc.user_uuid = ?1
+         WHERE c.organization_uuid = ?2
+           AND (
+             m.atype <= 1
+             OR m.access_all = 1
+             OR uc.user_uuid IS NOT NULL
+           )",
+    )
+    .bind_refs([&D1Type::Text(user_uuid), &D1Type::Text(org_uuid)])
+    .map_err(d1_err)?
+    .all()
+    .await
+    .map_err(d1_err)?
+    .results::<Cipher>()
+    .map_err(d1_err)
 }
 
 pub async fn find_cipher_collections_by_org(

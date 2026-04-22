@@ -1,7 +1,9 @@
 use worker::Request;
+use worker::d1::D1Database;
 use worker::kv::KvStore;
 
 use crate::config::RequestContext;
+use crate::db::queries;
 use crate::error::{AppError, Result};
 
 use super::claims::LoginClaims;
@@ -26,7 +28,8 @@ pub async fn auth_from_request(req: &Request, ctx: &RequestContext) -> Result<Au
         .map_err(|_| AppError::Unauthorized("Missing Authorization header".into()))?
         .ok_or_else(|| AppError::Unauthorized("Missing Authorization header".into()))?;
     let kv = ctx.kv()?;
-    validate_access_token(&auth_header, &kv).await
+    let db = ctx.db()?;
+    validate_access_token(&auth_header, &kv, &db).await
 }
 
 /// Verify a master password hash against the stored hash for a user.
@@ -57,10 +60,28 @@ pub fn extract_bearer_token(auth_header: &str) -> Result<&str> {
 }
 
 /// Validate an access token and return the authenticated user.
-pub async fn validate_access_token(auth_header: &str, kv: &KvStore) -> Result<AuthenticatedUser> {
+///
+/// Beyond signature + expiration, this compares the token's `sstamp` claim
+/// against the user's current `security_stamp` in the database. Operations
+/// that rotate the stamp (password change, KDF change, key rotation, explicit
+/// stamp bump) immediately invalidate every outstanding access token — the
+/// JWT still verifies cryptographically, but the stamp mismatch rejects it
+/// here.
+pub async fn validate_access_token(
+    auth_header: &str,
+    kv: &KvStore,
+    db: &D1Database,
+) -> Result<AuthenticatedUser> {
     let token = extract_bearer_token(auth_header)?;
     let public_key = jwt::load_public_key(kv).await?;
     let claims: LoginClaims = jwt::verify_and_decode_jwt(token, &public_key).await?;
+
+    let user = queries::find_user_by_uuid(db, &claims.sub)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized("User not found".into()))?;
+    if user.security_stamp != claims.sstamp {
+        return Err(AppError::Unauthorized("Session revoked".into()));
+    }
 
     Ok(AuthenticatedUser {
         uuid: claims.sub,

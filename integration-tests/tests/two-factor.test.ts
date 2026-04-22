@@ -135,7 +135,9 @@ describe("2FA login flow", () => {
     );
     const getBody = (await getRes.json()) as Record<string, unknown>;
     const totpKey = getBody.Key as string;
-    const code = await generateTotpCode(totpKey);
+    // Use the next 30-second step so we don't collide with the enable step
+    // stored as last_used; the server accepts ±1 drift.
+    const code = await generateTotpCode(totpKey, 1);
 
     const res = await loginUser(testUser.email, testUser.masterPasswordHash, {
       twoFactorProvider: "0",

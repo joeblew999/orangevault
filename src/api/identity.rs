@@ -234,11 +234,13 @@ async fn handle_password_grant(
                             .ok_or_else(|| oauth_invalid_grant("TOTP not configured"))?;
                         let secret = base32_decode(&tf.data)?;
                         let now = now_epoch_secs() as u64;
-                        let valid = validate_totp(&secret, token, now).await?;
-                        if !valid {
-                            return Err(oauth_invalid_grant("Invalid TOTP code"));
+                        let step = validate_totp(&secret, token, now)
+                            .await?
+                            .ok_or_else(|| oauth_invalid_grant("Invalid TOTP code"))?;
+                        if step <= tf.last_used.unwrap_or(0) {
+                            return Err(oauth_invalid_grant("TOTP code already used"));
                         }
-                        queries::update_two_factor_last_used(db, &tf.uuid, now as i64).await?;
+                        queries::update_two_factor_last_used(db, &tf.uuid, step).await?;
                     }
                     8 => {
                         // Recovery code

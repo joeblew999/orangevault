@@ -145,10 +145,13 @@ export async function loginUser(
   });
 }
 
-export async function generateTotpCode(base32Key: string): Promise<string> {
+export async function generateTotpCode(
+  base32Key: string,
+  stepOffset: number = 0,
+): Promise<string> {
   const secret = base32Decode(base32Key);
   const time = Math.floor(Date.now() / 1000);
-  const counter = Math.floor(time / 30);
+  const counter = Math.floor(time / 30) + stepOffset;
 
   const counterBuf = new ArrayBuffer(8);
   const view = new DataView(counterBuf);

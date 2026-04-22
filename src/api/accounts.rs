@@ -224,6 +224,7 @@ pub async fn post_password(
                 &now,
             )
             .await?;
+            queries::delete_devices_for_user(&db, &user.uuid).await?;
 
             notifications::send_notification(
                 &ctx.env,
@@ -287,6 +288,7 @@ pub async fn put_kdf(
                 &now,
             )
             .await?;
+            queries::delete_devices_for_user(&db, &user.uuid).await?;
 
             notifications::send_notification(
                 &ctx.env,
@@ -335,6 +337,7 @@ pub async fn put_keys(
                 &now,
             )
             .await?;
+            queries::delete_devices_for_user(&db, &user.uuid).await?;
 
             Ok(Response::empty()?.with_status(200))
         }
@@ -392,6 +395,7 @@ pub async fn post_security_stamp(
 
             let new_stamp = generate_uuid();
             queries::update_user_security_stamp(&db, &user.uuid, &new_stamp, &now_utc()).await?;
+            queries::delete_devices_for_user(&db, &user.uuid).await?;
 
             notifications::send_notification(
                 &ctx.env,

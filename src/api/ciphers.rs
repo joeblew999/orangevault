@@ -13,12 +13,60 @@ use crate::models::cipher::{
 use crate::notifications::{self, UpdateType};
 use crate::util::{generate_uuid, now_utc};
 
-/// Fetch a cipher by route param "id" and verify the user has access.
-/// Access is granted if the cipher belongs to the user directly, or if the
-/// cipher belongs to an org the user is a confirmed member of.
-async fn fetch_accessible_cipher(
+/// Whether a caller needs read-only access or the ability to mutate a cipher.
+/// `Write` additionally excludes members whose only collection grants are
+/// `read_only = 1`.
+#[derive(Clone, Copy)]
+enum Access {
+    Read,
+    Write,
+}
+
+/// Return whether `user_uuid` has the requested `Access` to `cipher`.
+///
+/// Precedence (matches the vaultwarden semantics we ported from):
+/// 1. Personal cipher (`user_uuid` matches) → full access.
+/// 2. Org cipher + confirmed membership with Owner/Admin role or
+///    `access_all = 1` → full access.
+/// 3. Otherwise, at least one `users_collections` row linking the user to a
+///    collection that contains the cipher, and for `Write` access at least
+///    one of those rows must have `read_only = 0`.
+async fn has_cipher_access(
+    db: &worker::D1Database,
+    user_uuid: &str,
+    cipher: &Cipher,
+    access: Access,
+) -> crate::error::Result<bool> {
+    if cipher.user_uuid.as_deref() == Some(user_uuid) {
+        return Ok(true);
+    }
+    let Some(ref org_uuid) = cipher.organization_uuid else {
+        return Ok(false);
+    };
+    let Some(m) = queries::find_membership(db, user_uuid, org_uuid).await? else {
+        return Ok(false);
+    };
+    if m.status != 2 {
+        return Ok(false);
+    }
+    if m.atype <= 1 || m.access_all {
+        return Ok(true);
+    }
+    let rows = queries::find_user_cipher_collection_access(db, user_uuid, &cipher.uuid).await?;
+    if rows.is_empty() {
+        return Ok(false);
+    }
+    Ok(match access {
+        Access::Read => true,
+        Access::Write => rows.iter().any(|uc| !uc.read_only),
+    })
+}
+
+/// Fetch a cipher by route param "id" and enforce `access`.
+async fn fetch_cipher_with_access(
     ctx: &RouteContext<RequestContext>,
     user_uuid: &str,
+    access: Access,
 ) -> crate::error::Result<Cipher> {
     let cipher_id = ctx
         .param("id")
@@ -29,18 +77,11 @@ async fn fetch_accessible_cipher(
         .await?
         .ok_or(AppError::NotFound("Cipher not found".into()))?;
 
-    if cipher.user_uuid.as_deref() == Some(user_uuid) {
-        return Ok(cipher);
+    if has_cipher_access(&db, user_uuid, &cipher, access).await? {
+        Ok(cipher)
+    } else {
+        Err(AppError::Forbidden("Not your cipher".into()))
     }
-
-    if let Some(ref org_uuid) = cipher.organization_uuid
-        && let Some(m) = queries::find_membership(&db, user_uuid, org_uuid).await?
-        && m.status == 2
-    {
-        return Ok(cipher);
-    }
-
-    Err(AppError::Forbidden("Not your cipher".into()))
 }
 
 pub async fn get_ciphers(
@@ -79,7 +120,7 @@ pub async fn get_cipher(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_cipher_with_access(&ctx, &user.uuid, Access::Read).await?;
             let db = ctx.data.db()?;
             let favorites = queries::find_favorites_by_user(&db, &user.uuid).await?;
             let folder_ciphers = queries::find_folder_ciphers_by_user(&db, &user.uuid).await?;
@@ -170,7 +211,7 @@ pub async fn put_cipher(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let mut cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let mut cipher = fetch_cipher_with_access(&ctx, &user.uuid, Access::Write).await?;
             let body: CipherRequest = req
                 .json()
                 .await
@@ -234,7 +275,7 @@ pub async fn delete_cipher(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_cipher_with_access(&ctx, &user.uuid, Access::Write).await?;
             let db = ctx.data.db()?;
             let cipher_uuid = cipher.uuid.clone();
             queries::hard_delete_cipher(&db, &cipher.uuid).await?;
@@ -261,7 +302,7 @@ pub async fn soft_delete_cipher(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_cipher_with_access(&ctx, &user.uuid, Access::Write).await?;
             let db = ctx.data.db()?;
             queries::soft_delete_cipher(&db, &cipher.uuid, &now_utc()).await?;
 
@@ -287,7 +328,7 @@ pub async fn restore_cipher(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_cipher_with_access(&ctx, &user.uuid, Access::Write).await?;
             let db = ctx.data.db()?;
             queries::restore_cipher(&db, &cipher.uuid, &now_utc()).await?;
 
@@ -406,8 +447,7 @@ pub async fn bulk_soft_delete(
             let now = now_utc();
             for cipher_id in &body.ids {
                 if let Some(cipher) = queries::find_cipher_by_uuid(&db, cipher_id).await?
-                    && (cipher.user_uuid.as_deref() == Some(&user.uuid)
-                        || has_org_access(&db, &user.uuid, &cipher).await)
+                    && has_cipher_access(&db, &user.uuid, &cipher, Access::Write).await?
                 {
                     queries::soft_delete_cipher(&db, cipher_id, &now).await?;
                 }
@@ -444,8 +484,7 @@ pub async fn bulk_restore(
             let now = now_utc();
             for cipher_id in &body.ids {
                 if let Some(cipher) = queries::find_cipher_by_uuid(&db, cipher_id).await?
-                    && (cipher.user_uuid.as_deref() == Some(&user.uuid)
-                        || has_org_access(&db, &user.uuid, &cipher).await)
+                    && has_cipher_access(&db, &user.uuid, &cipher, Access::Write).await?
                 {
                     queries::restore_cipher(&db, cipher_id, &now).await?;
                 }
@@ -549,7 +588,7 @@ pub async fn post_cipher_collections(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_cipher_with_access(&ctx, &user.uuid, Access::Write).await?;
             let body: CipherCollectionsRequest = req
                 .json()
                 .await
@@ -592,7 +631,7 @@ pub async fn post_attachment_v2(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_cipher_with_access(&ctx, &user.uuid, Access::Write).await?;
             let body: AttachmentRequestV2 = req
                 .json()
                 .await
@@ -635,16 +674,21 @@ pub async fn upload_attachment(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_cipher_with_access(&ctx, &user.uuid, Access::Write).await?;
             let att_id = ctx
                 .param("att_id")
                 .ok_or(AppError::BadRequest("Missing attachment id".into()))?
                 .clone();
 
             let db = ctx.data.db()?;
-            let _attachment = queries::find_attachment_by_id(&db, &att_id)
+            let attachment = queries::find_attachment_by_id(&db, &att_id)
                 .await?
                 .ok_or(AppError::NotFound("Attachment not found".into()))?;
+            if attachment.cipher_uuid != cipher.uuid {
+                return Err(AppError::Forbidden(
+                    "Attachment does not belong to this cipher".into(),
+                ));
+            }
 
             let bytes = req
                 .bytes()
@@ -673,7 +717,7 @@ pub async fn get_attachment(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_cipher_with_access(&ctx, &user.uuid, Access::Read).await?;
             let att_id = ctx
                 .param("att_id")
                 .ok_or(AppError::BadRequest("Missing attachment id".into()))?
@@ -717,7 +761,7 @@ pub async fn delete_attachment(
     error::into_response(
         async {
             let user = auth_from_request(&req, &ctx.data).await?;
-            let cipher = fetch_accessible_cipher(&ctx, &user.uuid).await?;
+            let cipher = fetch_cipher_with_access(&ctx, &user.uuid, Access::Write).await?;
             let att_id = ctx
                 .param("att_id")
                 .ok_or(AppError::BadRequest("Missing attachment id".into()))?
@@ -746,13 +790,4 @@ pub async fn delete_attachment(
         }
         .await,
     )
-}
-
-async fn has_org_access(db: &worker::D1Database, user_uuid: &str, cipher: &Cipher) -> bool {
-    if let Some(ref org_uuid) = cipher.organization_uuid
-        && let Ok(Some(m)) = queries::find_membership(db, user_uuid, org_uuid).await
-    {
-        return m.status == 2;
-    }
-    false
 }
