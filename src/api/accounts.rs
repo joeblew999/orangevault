@@ -2,6 +2,7 @@ use worker::{Request, Response, RouteContext};
 
 use crate::auth::guards::{auth_from_request, verify_master_password};
 use crate::config::RequestContext;
+use crate::crypto::pbkdf2::SERVER_PASSWORD_ITERATIONS;
 use crate::crypto::{pbkdf2, random};
 use crate::db::queries;
 use crate::error::{self, AppError};
@@ -202,9 +203,13 @@ pub async fn post_password(
             }
 
             let salt = random::random_bytes(64)?;
-            let password_hash =
-                pbkdf2::pbkdf2_sha256(body.new_master_password_hash.as_bytes(), &salt, 600_000, 32)
-                    .await?;
+            let password_hash = pbkdf2::pbkdf2_sha256(
+                body.new_master_password_hash.as_bytes(),
+                &salt,
+                SERVER_PASSWORD_ITERATIONS,
+                32,
+            )
+            .await?;
 
             let new_stamp = generate_uuid();
             let now = now_utc();
@@ -213,7 +218,7 @@ pub async fn post_password(
                 &user.uuid,
                 &base64_encode(&password_hash),
                 &base64_encode(&salt),
-                600_000,
+                SERVER_PASSWORD_ITERATIONS,
                 &body.key,
                 &new_stamp,
                 &now,
@@ -257,9 +262,13 @@ pub async fn put_kdf(
             }
 
             let salt = random::random_bytes(64)?;
-            let password_hash =
-                pbkdf2::pbkdf2_sha256(body.new_master_password_hash.as_bytes(), &salt, 600_000, 32)
-                    .await?;
+            let password_hash = pbkdf2::pbkdf2_sha256(
+                body.new_master_password_hash.as_bytes(),
+                &salt,
+                SERVER_PASSWORD_ITERATIONS,
+                32,
+            )
+            .await?;
 
             let new_stamp = generate_uuid();
             let now = now_utc();
@@ -268,7 +277,7 @@ pub async fn put_kdf(
                 &user.uuid,
                 &base64_encode(&password_hash),
                 &base64_encode(&salt),
-                600_000,
+                SERVER_PASSWORD_ITERATIONS,
                 &body.key,
                 &new_stamp,
                 body.kdf,

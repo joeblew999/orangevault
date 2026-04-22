@@ -68,9 +68,22 @@ impl RequestContext {
         self.var("DOMAIN")
     }
 
+    pub fn domain_origin(&self) -> Result<String> {
+        let domain = self.domain()?;
+        let url = worker::Url::parse(&domain)
+            .map_err(|e| AppError::Internal(format!("Invalid DOMAIN {domain}: {e}")))?;
+        Ok(url.origin().ascii_serialization())
+    }
+
     pub fn signups_allowed(&self) -> bool {
         self.var("SIGNUPS_ALLOWED")
             .map(|v| v == "true")
             .unwrap_or(false)
+    }
+
+    pub fn web_vault_enabled(&self) -> bool {
+        self.var("WEB_VAULT_ENABLED")
+            .map(|v| v == "true")
+            .unwrap_or(true)
     }
 }

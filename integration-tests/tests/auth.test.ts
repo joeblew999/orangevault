@@ -96,6 +96,133 @@ describe("/identity/accounts/register", () => {
   });
 });
 
+describe("/identity/accounts/register/send-verification-email", () => {
+  it("returns a JWT string that register/finish accepts", async () => {
+    const user = generateTestUser("verify");
+
+    const verifyRes = await workerFetch(
+      "/identity/accounts/register/send-verification-email",
+      {
+        method: "POST",
+        body: { email: user.email, name: user.name },
+      },
+    );
+    expect(verifyRes.status).toBe(200);
+    const token = (await verifyRes.json()) as string;
+    expect(typeof token).toBe("string");
+    expect(token.split(".").length).toBe(3);
+
+    const finishRes = await workerFetch("/identity/accounts/register/finish", {
+      method: "POST",
+      body: {
+        email: user.email,
+        name: user.name,
+        masterPasswordHash: user.masterPasswordHash,
+        emailVerificationToken: token,
+        key: "encrypted-key-placeholder",
+        kdf: 0,
+        kdfIterations: 600000,
+        keys: {
+          publicKey: "public-key-placeholder",
+          encryptedPrivateKey: "encrypted-private-key-placeholder",
+        },
+      },
+    });
+    expect(finishRes.status).toBe(200);
+
+    const loginRes = await loginUser(user.email, user.masterPasswordHash);
+    expect(loginRes.status).toBe(200);
+  });
+
+  it("register/finish rejects a token for a different email", async () => {
+    const verifyRes = await workerFetch(
+      "/identity/accounts/register/send-verification-email",
+      {
+        method: "POST",
+        body: { email: "alice@test.example.com", name: "Alice" },
+      },
+    );
+    const token = (await verifyRes.json()) as string;
+
+    const finishRes = await workerFetch("/identity/accounts/register/finish", {
+      method: "POST",
+      body: {
+        email: "mallory@test.example.com",
+        masterPasswordHash: "dGVzdA==",
+        emailVerificationToken: token,
+        key: "encrypted-key-placeholder",
+        kdf: 0,
+        kdfIterations: 600000,
+        keys: {
+          publicKey: "public-key-placeholder",
+          encryptedPrivateKey: "encrypted-private-key-placeholder",
+        },
+      },
+    });
+    expect(finishRes.status).toBe(400);
+  });
+
+  it("register/finish accepts userSymmetricKey / userAsymmetricKeys aliases", async () => {
+    const user = generateTestUser("aliases");
+
+    const verifyRes = await workerFetch(
+      "/identity/accounts/register/send-verification-email",
+      {
+        method: "POST",
+        body: { email: user.email, name: user.name },
+      },
+    );
+    const token = (await verifyRes.json()) as string;
+
+    const finishRes = await workerFetch("/identity/accounts/register/finish", {
+      method: "POST",
+      body: {
+        email: user.email,
+        masterPasswordHash: user.masterPasswordHash,
+        emailVerificationToken: token,
+        userSymmetricKey: "encrypted-key-placeholder",
+        userAsymmetricKeys: {
+          publicKey: "public-key-placeholder",
+          encryptedPrivateKey: "encrypted-private-key-placeholder",
+        },
+        kdf: 0,
+        kdfIterations: 600000,
+      },
+    });
+    expect(finishRes.status).toBe(200);
+
+    const loginRes = await loginUser(user.email, user.masterPasswordHash);
+    expect(loginRes.status).toBe(200);
+    const login = (await loginRes.json()) as Record<string, unknown>;
+    expect(login.Key).toBe("encrypted-key-placeholder");
+    expect(login.PrivateKey).toBe("encrypted-private-key-placeholder");
+    expect(login.AccountKeys).not.toBeNull();
+    expect(
+      (login.UserDecryptionOptions as { MasterPasswordUnlock: unknown })
+        .MasterPasswordUnlock,
+    ).not.toBeNull();
+  });
+
+  it("register/finish rejects a missing token", async () => {
+    const user = generateTestUser("notoken");
+    const res = await workerFetch("/identity/accounts/register/finish", {
+      method: "POST",
+      body: {
+        email: user.email,
+        masterPasswordHash: user.masterPasswordHash,
+        key: "encrypted-key-placeholder",
+        kdf: 0,
+        kdfIterations: 600000,
+        keys: {
+          publicKey: "public-key-placeholder",
+          encryptedPrivateKey: "encrypted-private-key-placeholder",
+        },
+      },
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("/identity/connect/token (password grant)", () => {
   it("returns tokens for valid credentials", async () => {
     const user = generateTestUser("login");
@@ -115,8 +242,26 @@ describe("/identity/connect/token (password grant)", () => {
     expect(body.Kdf).toBe(0);
     expect(body.KdfIterations).toBe(600000);
     expect(body.unofficialServer).toBe(true);
-    expect(body.UserDecryptionOptions).toEqual({
+    expect(body.UserDecryptionOptions).toMatchObject({
       HasMasterPassword: true,
+      Object: "userDecryptionOptions",
+      MasterPasswordUnlock: {
+        Kdf: {
+          KdfType: 0,
+          Iterations: 600000,
+        },
+        MasterKeyEncryptedUserKey: "encrypted-key-placeholder",
+        MasterKeyWrappedUserKey: "encrypted-key-placeholder",
+        Salt: expect.stringMatching(/@test\.example\.com$/),
+      },
+    });
+    expect(body.AccountKeys).toEqual({
+      Object: "privateKeys",
+      publicKeyEncryptionKeyPair: {
+        Object: "publicKeyEncryptionKeyPair",
+        wrappedPrivateKey: "encrypted-private-key-placeholder",
+        publicKey: "public-key-placeholder",
+      },
     });
   });
 

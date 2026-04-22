@@ -1,15 +1,20 @@
 use worker::{Request, Response, RouteContext};
 
-use crate::auth::claims::RefreshClaims;
+use crate::auth::claims::{RefreshClaims, RegisterVerifyClaims};
 use crate::auth::guards::verify_master_password;
 use crate::auth::jwt;
 use crate::config::RequestContext;
+use crate::crypto::pbkdf2::SERVER_PASSWORD_ITERATIONS;
 use crate::crypto::totp::{base32_decode, constant_time_eq, validate_totp};
 use crate::crypto::{pbkdf2, random};
 use crate::db::models::{Device, User};
 use crate::db::queries;
 use crate::error::{self, AppError};
-use crate::models::user::{LoginResponse, RegisterRequest, TokenRequest, UserDecryptionOptions};
+use crate::models::user::{
+    AccountKeys, LoginResponse, MasterPasswordUnlock, MasterPasswordUnlockKdf,
+    PublicKeyEncryptionKeyPair, RegisterRequest, RegisterVerificationRequest, TokenRequest,
+    UserDecryptionOptions,
+};
 use crate::util::{base64_encode, generate_uuid, now_epoch_secs, now_utc};
 
 pub async fn register(
@@ -21,54 +26,145 @@ pub async fn register(
             if !ctx.data.signups_allowed() {
                 return Err(AppError::BadRequest("Registration is closed".into()));
             }
-
             let body: RegisterRequest = req
                 .json()
                 .await
                 .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
-
-            let email = body.email.trim().to_lowercase();
-            if !email.contains('@') || email.len() < 5 {
-                return Err(AppError::BadRequest("Invalid email address".into()));
-            }
-
+            let email = normalize_email(&body.email)?;
+            let name = body.name.clone().unwrap_or_default();
             let db = ctx.data.db()?;
-
-            // Server-side re-hash: PBKDF2 the client's masterPasswordHash
-            let salt = random::random_bytes(64)?;
-            let password_hash =
-                pbkdf2::pbkdf2_sha256(body.master_password_hash.as_bytes(), &salt, 600_000, 32)
-                    .await?;
-
-            let now = now_utc();
-            let user = User {
-                uuid: generate_uuid(),
-                email,
-                name: body.name.unwrap_or_default(),
-                password_hash: base64_encode(&password_hash),
-                salt: base64_encode(&salt),
-                password_iterations: 600_000,
-                akey: body.key,
-                private_key: body.keys.as_ref().map(|k| k.encrypted_private_key.clone()),
-                public_key: body.keys.as_ref().map(|k| k.public_key.clone()),
-                security_stamp: generate_uuid(),
-                client_kdf_type: body.kdf.unwrap_or(0),
-                client_kdf_iter: body.kdf_iterations.unwrap_or(600_000),
-                client_kdf_memory: body.kdf_memory,
-                client_kdf_parallelism: body.kdf_parallelism,
-                api_key: None,
-                avatar_color: None,
-                email_verified: false,
-                totp_recover: None,
-                created_at: now.clone(),
-                updated_at: now,
-            };
-
-            queries::insert_user(&db, &user).await?;
+            perform_registration(&db, &email, name, false, &body).await?;
             Ok(Response::empty()?.with_status(200))
         }
         .await,
     )
+}
+
+/// OrangeVault has no mail transport, so this endpoint returns the
+/// verification token inline (as a JSON-encoded string) rather than emailing
+/// a link. The client passes it back to `/register/finish`. Accounts created
+/// this way remain unverified since we can't confirm the email was received.
+pub async fn register_verification_email(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            if !ctx.data.signups_allowed() {
+                return Err(AppError::BadRequest("Registration is closed".into()));
+            }
+            let body: RegisterVerificationRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+            let email = normalize_email(&body.email)?;
+
+            let kv = ctx.data.kv()?;
+            let signing_key = jwt::load_or_create_signing_key(&kv).await?;
+            let token =
+                jwt::create_register_verify_token(&email, body.name, false, &signing_key).await?;
+
+            Ok(Response::from_json(&token)?)
+        }
+        .await,
+    )
+}
+
+pub async fn register_finish(
+    mut req: Request,
+    ctx: RouteContext<RequestContext>,
+) -> worker::Result<Response> {
+    error::into_response(
+        async {
+            if !ctx.data.signups_allowed() {
+                return Err(AppError::BadRequest("Registration is closed".into()));
+            }
+            let body: RegisterRequest = req
+                .json()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
+            let email = normalize_email(&body.email)?;
+
+            let token = body
+                .email_verification_token
+                .as_deref()
+                .ok_or_else(|| AppError::BadRequest("Missing email verification token".into()))?;
+
+            let kv = ctx.data.kv()?;
+            let public_key = jwt::load_public_key(&kv).await?;
+            let claims: RegisterVerifyClaims =
+                jwt::verify_and_decode_jwt(token, &public_key).await?;
+
+            if claims.sub != email {
+                return Err(AppError::BadRequest(
+                    "Email verification token does not match email".into(),
+                ));
+            }
+
+            let name = body
+                .name
+                .clone()
+                .or(claims.name.clone())
+                .unwrap_or_default();
+
+            let db = ctx.data.db()?;
+            perform_registration(&db, &email, name, claims.verified, &body).await?;
+            Ok(Response::empty()?.with_status(200))
+        }
+        .await,
+    )
+}
+
+fn normalize_email(raw: &str) -> crate::error::Result<String> {
+    let email = raw.trim().to_lowercase();
+    if !email.contains('@') || email.len() < 5 {
+        return Err(AppError::BadRequest("Invalid email address".into()));
+    }
+    Ok(email)
+}
+
+async fn perform_registration(
+    db: &worker::D1Database,
+    email: &str,
+    name: String,
+    email_verified: bool,
+    body: &RegisterRequest,
+) -> crate::error::Result<()> {
+    let salt = random::random_bytes(64)?;
+    let password_hash = pbkdf2::pbkdf2_sha256(
+        body.master_password_hash.as_bytes(),
+        &salt,
+        SERVER_PASSWORD_ITERATIONS,
+        32,
+    )
+    .await?;
+
+    let now = now_utc();
+    let user = User {
+        uuid: generate_uuid(),
+        email: email.to_string(),
+        name,
+        password_hash: base64_encode(&password_hash),
+        salt: base64_encode(&salt),
+        password_iterations: SERVER_PASSWORD_ITERATIONS,
+        akey: body.key.clone(),
+        private_key: body.keys.as_ref().map(|k| k.encrypted_private_key.clone()),
+        public_key: body.keys.as_ref().map(|k| k.public_key.clone()),
+        security_stamp: generate_uuid(),
+        client_kdf_type: body.kdf.unwrap_or(0),
+        client_kdf_iter: body.kdf_iterations.unwrap_or(600_000),
+        client_kdf_memory: body.kdf_memory,
+        client_kdf_parallelism: body.kdf_parallelism,
+        api_key: None,
+        avatar_color: None,
+        email_verified,
+        totp_recover: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    queries::insert_user(db, &user).await?;
+    Ok(())
 }
 
 pub async fn connect_token(
@@ -245,6 +341,30 @@ async fn handle_refresh_grant(
 }
 
 fn build_login_response(access_token: String, refresh_token: String, user: &User) -> LoginResponse {
+    let master_password_unlock = user.akey.as_ref().map(|akey| MasterPasswordUnlock {
+        kdf: MasterPasswordUnlockKdf {
+            kdf_type: user.client_kdf_type,
+            iterations: user.client_kdf_iter,
+            memory: user.client_kdf_memory,
+            parallelism: user.client_kdf_parallelism,
+        },
+        master_key_encrypted_user_key: akey.clone(),
+        master_key_wrapped_user_key: akey.clone(),
+        salt: user.email.clone(),
+    });
+
+    let account_keys = match (user.private_key.as_ref(), user.public_key.as_ref()) {
+        (Some(private_key), Some(public_key)) => Some(AccountKeys {
+            public_key_encryption_key_pair: PublicKeyEncryptionKeyPair {
+                wrapped_private_key: private_key.clone(),
+                public_key: public_key.clone(),
+                object: "publicKeyEncryptionKeyPair",
+            },
+            object: "privateKeys",
+        }),
+        _ => None,
+    };
+
     LoginResponse {
         access_token,
         expires_in: jwt::ACCESS_TOKEN_EXPIRY,
@@ -259,7 +379,10 @@ fn build_login_response(access_token: String, refresh_token: String, user: &User
         unofficial_server: true,
         user_decryption_options: UserDecryptionOptions {
             has_master_password: true,
+            master_password_unlock,
+            object: "userDecryptionOptions",
         },
+        account_keys,
         two_factor_token: None,
     }
 }

@@ -34,39 +34,36 @@ export async function getD1() {
 }
 
 export async function applyMigrations() {
-  const { readFileSync } = await import("node:fs");
+  const { readFileSync, readdirSync } = await import("node:fs");
   const { dirname, resolve } = await import("node:path");
   const { fileURLToPath } = await import("node:url");
 
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  const migrationPath = resolve(
-    __dirname,
-    "..",
-    "..",
-    "migrations",
-    "0001_initial",
-    "up.sql",
-  );
-  const sql = readFileSync(migrationPath, "utf-8");
+  const migrationsDir = resolve(__dirname, "..", "..", "migrations");
+  const files = readdirSync(migrationsDir)
+    .filter((f) => f.endsWith(".sql"))
+    .sort();
 
   const db = await getD1();
 
-  // Strip SQL comments, then split on semicolons and run each statement
-  const cleaned = sql
-    .split("\n")
-    .map((line) => {
-      const idx = line.indexOf("--");
-      return idx >= 0 ? line.slice(0, idx) : line;
-    })
-    .join("\n");
+  for (const file of files) {
+    const sql = readFileSync(resolve(migrationsDir, file), "utf-8");
+    const cleaned = sql
+      .split("\n")
+      .map((line) => {
+        const idx = line.indexOf("--");
+        return idx >= 0 ? line.slice(0, idx) : line;
+      })
+      .join("\n");
 
-  const statements = cleaned
-    .split(";")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+    const statements = cleaned
+      .split(";")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
 
-  for (const stmt of statements) {
-    await db.prepare(stmt).run();
+    for (const stmt of statements) {
+      await db.prepare(stmt).run();
+    }
   }
 }
 

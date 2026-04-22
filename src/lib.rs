@@ -36,7 +36,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get("/api/alive", |_, _| Response::ok(""))
         .get_async("/api/config", api::accounts::get_config)
         .post_async("/accounts/prelogin", api::accounts::prelogin)
+        .post_async("/identity/accounts/prelogin", api::accounts::prelogin)
         .post_async("/identity/accounts/register", api::identity::register)
+        .post_async(
+            "/identity/accounts/register/send-verification-email",
+            api::identity::register_verification_email,
+        )
+        .post_async(
+            "/identity/accounts/register/finish",
+            api::identity::register_finish,
+        )
         .post_async("/identity/connect/token", api::identity::connect_token)
         .get_async("/api/accounts/profile", api::accounts::get_profile)
         .put_async("/api/accounts/profile", api::accounts::put_profile)
@@ -226,6 +235,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             api::events::get_org_events,
         )
         .get_async("/icons/:domain/icon.png", api::icons::get_icon)
+        .get_async("/app-id.json", api::web::get_app_id)
         .get_async("/notifications/hub", api::notifications::hub)
         .run(req, env)
         .await;

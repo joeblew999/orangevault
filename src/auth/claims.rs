@@ -63,3 +63,15 @@ pub struct InviteClaims {
     pub email: String,
     pub org_id: String,
 }
+
+/// `sub` holds the lowercased email so `register/finish` can reject a token
+/// whose email was tampered with in the finish request body.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RegisterVerifyClaims {
+    pub nbf: i64,
+    pub exp: i64,
+    pub iss: String,
+    pub sub: String,
+    pub name: Option<String>,
+    pub verified: bool,
+}

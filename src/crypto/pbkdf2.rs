@@ -6,6 +6,14 @@ use crate::error::{AppError, Result};
 
 use super::{js_array, js_set, subtle_crypto};
 
+/// Iteration count used when re-hashing a client-derived master password
+/// hash on the server side. Cloudflare Workers' SubtleCrypto rejects
+/// PBKDF2 iteration counts above 100,000, so we cap here even though
+/// Bitwarden's upstream default is 600,000. The client-side KDF (which
+/// derives the actual vault key) still runs at whatever iteration count
+/// the client chose — that value is stored in `User.client_kdf_iter`.
+pub const SERVER_PASSWORD_ITERATIONS: u32 = 100_000;
+
 /// Derive key bytes using PBKDF2-HMAC-SHA256 via SubtleCrypto.
 pub async fn pbkdf2_sha256(
     password: &[u8],

@@ -7,13 +7,14 @@ use crate::db::models::User;
 use crate::error::{AppError, Result};
 use crate::util::{base64url_decode, base64url_encode, generate_uuid, now_epoch_secs};
 
-use super::claims::{LoginClaims, RefreshClaims};
+use super::claims::{LoginClaims, RefreshClaims, RegisterVerifyClaims};
 
 const KV_PRIVATE_KEY: &str = "RSA_PRIVATE_KEY";
 const KV_PUBLIC_KEY: &str = "RSA_PUBLIC_KEY";
 const JWT_HEADER: &str = r#"{"alg":"RS256","typ":"JWT"}"#;
 pub const ACCESS_TOKEN_EXPIRY: i64 = 7_200; // 2 hours
 const REFRESH_TOKEN_EXPIRY: i64 = 2_592_000; // 30 days
+const REGISTER_VERIFY_EXPIRY: i64 = 1_800; // 30 minutes
 
 /// Load the RSA private key from KV, or generate and store a new pair.
 pub async fn load_or_create_signing_key(kv: &KvStore) -> Result<web_sys::CryptoKey> {
@@ -142,6 +143,25 @@ pub async fn create_access_token(
         orgadmin: vec![],
         orguser: vec![],
         orgmanager: vec![],
+    };
+    sign_jwt(&claims, signing_key).await
+}
+
+/// Create a signed registration-verification token.
+pub async fn create_register_verify_token(
+    email: &str,
+    name: Option<String>,
+    verified: bool,
+    signing_key: &web_sys::CryptoKey,
+) -> Result<String> {
+    let now = now_epoch_secs();
+    let claims = RegisterVerifyClaims {
+        nbf: now,
+        exp: now + REGISTER_VERIFY_EXPIRY,
+        iss: ISSUER.into(),
+        sub: email.to_string(),
+        name,
+        verified,
     };
     sign_jwt(&claims, signing_key).await
 }
