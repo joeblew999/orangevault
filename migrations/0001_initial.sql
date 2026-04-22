@@ -189,6 +189,21 @@ CREATE TABLE equivalent_domains (
   custom_equiv_domains TEXT
 );
 
+CREATE TABLE events (
+  uuid TEXT PRIMARY KEY,
+  event_type INTEGER NOT NULL,
+  user_uuid TEXT,
+  org_uuid TEXT,
+  cipher_uuid TEXT,
+  collection_uuid TEXT,
+  group_uuid TEXT,
+  member_uuid TEXT,
+  act_user_uuid TEXT,
+  device_type INTEGER,
+  ip_address TEXT,
+  event_date TEXT NOT NULL
+);
+
 -- Indexes for common queries
 CREATE INDEX idx_devices_user ON devices(user_uuid);
 CREATE INDEX idx_ciphers_user ON ciphers(user_uuid);
@@ -200,3 +215,5 @@ CREATE INDEX idx_collections_org ON collections(org_uuid);
 CREATE INDEX idx_two_factor_user ON two_factor(user_uuid);
 CREATE INDEX idx_sends_user ON sends(user_uuid);
 CREATE INDEX idx_sends_deletion ON sends(deletion_date);
+CREATE INDEX idx_events_org ON events(org_uuid, event_date);
+CREATE INDEX idx_events_user ON events(user_uuid, event_date);
