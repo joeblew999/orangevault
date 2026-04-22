@@ -14,6 +14,7 @@ mod util;
 use config::RequestContext;
 use middleware::cors;
 use middleware::headers::extract_client_info;
+use middleware::security::apply_security_headers;
 
 mod jobs;
 
@@ -22,13 +23,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
 
     let origin = req.headers().get("Origin").ok().flatten();
+    let approved_origin = cors::resolve_allowed_origin(&env, origin.as_deref());
 
     if req.method() == Method::Options {
-        return cors::preflight_response(origin.as_deref());
+        let resp = cors::preflight_response(approved_origin.as_deref())?;
+        return apply_security_headers(resp);
     }
 
     let client_info = extract_client_info(&req);
-
     let router = Router::with_data(RequestContext::new(env.clone(), client_info));
 
     let response = router
@@ -240,14 +242,17 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .run(req, env)
         .await;
 
+    let finalize = |resp: Response| -> Result<Response> {
+        apply_security_headers(cors::apply_cors_headers(resp, approved_origin.as_deref())?)
+    };
+
     // WebSocket 101 responses have immutable headers, so CORS can't be applied.
     match response {
         Ok(resp) if resp.status_code() == 101 => Ok(resp),
-        Ok(resp) => cors::apply_cors_headers(resp, origin.as_deref()),
+        Ok(resp) => finalize(resp),
         Err(e) => {
             console_error!("Router error: {e}");
-            let err_resp = Response::error("Internal Server Error", 500)?;
-            cors::apply_cors_headers(err_resp, origin.as_deref())
+            finalize(Response::error("Internal Server Error", 500)?)
         }
     }
 }

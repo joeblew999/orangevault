@@ -28,10 +28,12 @@ describe("/api/config", () => {
     const body = (await res.json()) as {
       environment: Record<string, string>;
     };
-    expect(body.environment.api).toBe("http://localhost/api");
-    expect(body.environment.identity).toBe("http://localhost/identity");
+    expect(body.environment.api).toBe("https://vault.example.com/api");
+    expect(body.environment.identity).toBe(
+      "https://vault.example.com/identity",
+    );
     expect(body.environment.notifications).toBe(
-      "http://localhost/notifications",
+      "https://vault.example.com/notifications",
     );
   });
 });

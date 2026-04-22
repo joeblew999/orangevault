@@ -29,7 +29,7 @@ const mf_instance = new Miniflare({
         USER_NOTIFIER: "UserNotifier",
       },
       bindings: {
-        DOMAIN: "http://localhost",
+        DOMAIN: "https://vault.example.com",
         SIGNUPS_ALLOWED: "true",
         WEB_VAULT_ENABLED: "true",
         PING_INTERVAL_SECS: "1",

@@ -74,7 +74,8 @@ pub async fn validate_access_token(
 ) -> Result<AuthenticatedUser> {
     let token = extract_bearer_token(auth_header)?;
     let public_key = jwt::load_public_key(kv).await?;
-    let claims: LoginClaims = jwt::verify_and_decode_jwt(token, &public_key).await?;
+    let claims: LoginClaims =
+        jwt::verify_and_decode_jwt(token, &public_key, jwt::TYPE_ACCESS).await?;
 
     let user = queries::find_user_by_uuid(db, &claims.sub)
         .await?

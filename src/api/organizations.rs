@@ -321,12 +321,13 @@ pub async fn invite_member(
                     continue;
                 }
 
-                // Check if already a member
-                let existing_user = queries::find_user_by_email(&db, &email).await?;
-                let user_uuid = existing_user
-                    .as_ref()
-                    .map(|u| u.uuid.clone())
-                    .unwrap_or_else(|| email.clone()); // Use email as placeholder UUID for non-existing users
+                // No SMTP, so invitees must already exist — we can't route an invite token to them otherwise.
+                let Some(existing_user) = queries::find_user_by_email(&db, &email).await? else {
+                    return Err(AppError::BadRequest(format!(
+                        "User {email} has not registered yet — ask them to create an account before inviting."
+                    )));
+                };
+                let user_uuid = existing_user.uuid.clone();
 
                 // Check if already has a membership
                 if queries::find_membership(&db, &user_uuid, &org_id)
@@ -336,16 +337,13 @@ pub async fn invite_member(
                     continue; // Skip duplicate invites
                 }
 
-                // Auto-accept for existing users (status=1), invited for non-existing (status=0)
-                let status = if existing_user.is_some() { 1 } else { 0 };
-
                 let membership = Membership {
                     uuid: generate_uuid(),
                     user_uuid,
                     org_uuid: org_id.clone(),
                     akey: None,
                     atype: body.r#type,
-                    status,
+                    status: 1, // Accepted — admin must still Confirm (status 2).
                     access_all: body.access_all,
                     external_id: None,
                     reset_password_key: None,

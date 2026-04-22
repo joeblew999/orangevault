@@ -54,10 +54,32 @@ describe("CORS", () => {
     expect(res.headers.get("Access-Control-Allow-Credentials")).toBe("true");
   });
 
-  it("requests without Origin get * as Allow-Origin", async () => {
+  it("requests without Origin omit Allow-Origin", async () => {
     const res = await mf.dispatchFetch(`${mfUrl}/alive`);
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(res.headers.get("Access-Control-Allow-Credentials")).toBeNull();
+  });
+
+  it("unapproved Origin does not get echoed back", async () => {
+    const res = await mf.dispatchFetch(`${mfUrl}/alive`, {
+      headers: { Origin: "https://evil.example.com" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(res.headers.get("Access-Control-Allow-Credentials")).toBeNull();
+  });
+
+  it("responses include defense-in-depth security headers", async () => {
+    const res = await mf.dispatchFetch(`${mfUrl}/alive`);
+    expect(res.headers.get("Strict-Transport-Security")).toContain("max-age=");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(res.headers.get("Content-Security-Policy")).toContain(
+      "frame-ancestors",
+    );
   });
 });

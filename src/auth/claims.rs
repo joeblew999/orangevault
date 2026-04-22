@@ -72,6 +72,7 @@ pub struct RegisterVerifyClaims {
     pub exp: i64,
     pub iss: String,
     pub sub: String,
+    pub r#type: String,
     pub name: Option<String>,
     pub verified: bool,
 }

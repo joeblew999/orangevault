@@ -40,10 +40,11 @@ pub async fn register(
     )
 }
 
-/// OrangeVault has no mail transport, so this endpoint returns the
-/// verification token inline (as a JSON-encoded string) rather than emailing
-/// a link. The client passes it back to `/register/finish`. Accounts created
-/// this way remain unverified since we can't confirm the email was received.
+/// No mail transport, so this endpoint returns the verification token inline
+/// (as a JSON-encoded string) rather than emailing a link. The client passes
+/// it back to `/register/finish`. Accounts created this way remain unverified
+/// since we can't confirm the email was received — gate open registration via
+/// `SIGNUPS_ALLOWED=false`.
 pub async fn register_verification_email(
     mut req: Request,
     ctx: RouteContext<RequestContext>,
@@ -93,7 +94,7 @@ pub async fn register_finish(
             let kv = ctx.data.kv()?;
             let public_key = jwt::load_public_key(&kv).await?;
             let claims: RegisterVerifyClaims =
-                jwt::verify_and_decode_jwt(token, &public_key).await?;
+                jwt::verify_and_decode_jwt(token, &public_key, jwt::TYPE_REGISTER_VERIFY).await?;
 
             if claims.sub != email {
                 return Err(AppError::BadRequest(
@@ -314,9 +315,10 @@ async fn handle_refresh_grant(
 
     // Verify and decode the refresh JWT
     let public_key = jwt::load_public_key(kv).await?;
-    let claims: RefreshClaims = jwt::verify_and_decode_jwt(refresh_token_str, &public_key)
-        .await
-        .map_err(|_| oauth_invalid_grant("Invalid refresh token"))?;
+    let claims: RefreshClaims =
+        jwt::verify_and_decode_jwt(refresh_token_str, &public_key, jwt::TYPE_REFRESH)
+            .await
+            .map_err(|_| oauth_invalid_grant("Invalid refresh token"))?;
 
     let user = queries::find_user_by_uuid(db, &claims.sub)
         .await?

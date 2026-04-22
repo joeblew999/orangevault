@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:worker": "cd .. && cargo install -q worker-build@^0.7 && worker-build --release",
+    "build:worker": "cd .. && cargo install -q worker-build@^0.8 && worker-build --release",
     "pretest": "npm run build:worker",
     "test": "vitest run",
     "test:watch": "vitest",
