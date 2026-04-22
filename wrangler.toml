@@ -21,6 +21,24 @@ bindings = [
   { name = "USER_NOTIFIER", class_name = "UserNotifier" }
 ]
 
+# Static web vault (Bitwarden web client, vaultwarden-patched).
+# Populate ./web-vault/ via `scripts/fetch-web-vault.sh`.
+# SPA fallback returns index.html for unknown paths so the Angular router
+# can take over; API-ish paths below always hit the Worker instead.
+[assets]
+directory = "./web-vault"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = [
+  "/alive",
+  "/api/*",
+  "/accounts/*",
+  "/identity/*",
+  "/notifications/*",
+  "/icons/*",
+  "/app-id.json",
+]
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["UserNotifier"]

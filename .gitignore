@@ -1,5 +1,6 @@
 /target
 /build
+/web-vault
 node_modules
 .wrangler
 *.wasm
