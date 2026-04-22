@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
+import { mf, mfUrl } from "./mf";
 import {
   workerFetch,
   authenticatedFetch,
@@ -479,6 +480,97 @@ describe("File Send (v2)", () => {
       },
     });
     expect(res.status).toBe(400);
+  });
+});
+
+// --- File Send download (signed URL) ---
+
+describe("File Send download auth", () => {
+  let sendId: string;
+  let fileId: string;
+  const bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+
+  beforeAll(async () => {
+    // Create + upload a file send we'll try to download.
+    const futureDate = futureIso();
+    const createRes = await authenticatedFetch("/api/sends/file/v2", authToken, {
+      method: "POST",
+      body: {
+        type: 1,
+        key: "2.dl_send_key",
+        name: "2.dl_send_name",
+        file: { fileName: "2.dl_filename" },
+        fileLength: bytes.length,
+        deletionDate: futureDate,
+      },
+    });
+    const body = (await createRes.json()) as Record<string, unknown>;
+    const sendResp = body.SendResponse as Record<string, unknown>;
+    sendId = sendResp.Id as string;
+    const url = body.Url as string;
+    fileId = url.split("/").pop()!;
+
+    // The upload endpoint expects raw bytes — mf.dispatchFetch keeps
+    // Uint8Array intact where `workerFetch` JSON-encodes the body.
+    const uploadRes = await mf.dispatchFetch(
+      `${mfUrl}/api/sends/${sendId}/file/${fileId}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          "Content-Type": "application/octet-stream",
+        },
+        body: bytes,
+      },
+    );
+    expect(uploadRes.status).toBe(200);
+  });
+
+  it("rejects bare GET without a download token", async () => {
+    const res = await mf.dispatchFetch(
+      `${mfUrl}/api/sends/${sendId}/${fileId}`,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects a tampered download token", async () => {
+    const res = await mf.dispatchFetch(
+      `${mfUrl}/api/sends/${sendId}/${fileId}?t=not.a.valid.jwt`,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("post_access_file returns a signed URL that downloads the file", async () => {
+    const accessRes = await workerFetch(
+      `/api/sends/${sendId}/access/file/${fileId}`,
+      { method: "POST", body: {} },
+    );
+    expect(accessRes.status).toBe(200);
+    const accessBody = (await accessRes.json()) as Record<string, unknown>;
+    const signedUrl = new URL(accessBody.Url as string);
+    expect(signedUrl.searchParams.get("t")).toBeTruthy();
+
+    const dlRes = await mf.dispatchFetch(
+      `${mfUrl}${signedUrl.pathname}${signedUrl.search}`,
+    );
+    expect(dlRes.status).toBe(200);
+    const received = new Uint8Array(await dlRes.arrayBuffer());
+    expect(received).toEqual(bytes);
+  });
+
+  it("download token is rejected for a different file_id", async () => {
+    const accessRes = await workerFetch(
+      `/api/sends/${sendId}/access/file/${fileId}`,
+      { method: "POST", body: {} },
+    );
+    const accessBody = (await accessRes.json()) as Record<string, unknown>;
+    const token = new URL(accessBody.Url as string).searchParams.get("t")!;
+
+    const bogusFile = "00000000-0000-0000-0000-000000000000";
+    const res = await mf.dispatchFetch(
+      `${mfUrl}/api/sends/${sendId}/${bogusFile}?t=${encodeURIComponent(token)}`,
+    );
+    expect(res.status).toBe(401);
   });
 });
 

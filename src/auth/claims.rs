@@ -76,3 +76,14 @@ pub struct RegisterVerifyClaims {
     pub name: Option<String>,
     pub verified: bool,
 }
+
+/// `sub` holds `"{send_id}/{file_id}"` so the token is bound to one object
+/// and can't be replayed against a different file on the same endpoint.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendAccessClaims {
+    pub nbf: i64,
+    pub exp: i64,
+    pub iss: String,
+    pub sub: String,
+    pub r#type: String,
+}

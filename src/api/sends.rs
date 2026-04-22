@@ -1,6 +1,8 @@
 use worker::{Request, Response, RouteContext};
 
+use crate::auth::claims::SendAccessClaims;
 use crate::auth::guards::auth_from_request;
+use crate::auth::jwt;
 use crate::config::RequestContext;
 use crate::crypto::{pbkdf2, random};
 use crate::db::models::Send as DbSend;
@@ -516,8 +518,12 @@ pub async fn post_access_file(
 
             queries::increment_send_access_count(&db, &send.uuid, &now).await?;
 
+            let kv = ctx.data.kv()?;
+            let signing_key = jwt::load_or_create_signing_key(&kv).await?;
+            let token = jwt::create_send_access_token(&send_id, &file_id, &signing_key).await?;
+
             let domain = ctx.data.domain()?;
-            let url = format!("{domain}/api/sends/{send_id}/{file_id}");
+            let url = format!("{domain}/api/sends/{send_id}/{file_id}?t={token}");
 
             let resp = SendFileDownloadResponse {
                 id: file_id,
@@ -530,9 +536,13 @@ pub async fn post_access_file(
     )
 }
 
-/// GET /api/sends/:send_id/:file_id — download a send file (used internally via signed URL).
+/// GET /api/sends/:send_id/:file_id?t=<jwt> — download a send file.
+///
+/// The `?t=` capability gates this endpoint because without it anyone who
+/// knew (or guessed) the path could stream the R2 object, bypassing the
+/// password / expiration / access-count checks done at mint time.
 pub async fn get_send_file(
-    _req: Request,
+    req: Request,
     ctx: RouteContext<RequestContext>,
 ) -> worker::Result<Response> {
     error::into_response(
@@ -545,6 +555,25 @@ pub async fn get_send_file(
                 .param("file_id")
                 .ok_or(AppError::BadRequest("Missing file_id".into()))?
                 .clone();
+
+            let url = req
+                .url()
+                .map_err(|e| AppError::Internal(format!("url parse: {e}")))?;
+            let token = url
+                .query_pairs()
+                .find(|(k, _)| k == "t")
+                .map(|(_, v)| v.to_string())
+                .ok_or_else(|| AppError::Unauthorized("Missing download token".into()))?;
+
+            let kv = ctx.data.kv()?;
+            let public_key = jwt::load_public_key(&kv).await?;
+            let claims: SendAccessClaims =
+                jwt::verify_and_decode_jwt(&token, &public_key, jwt::TYPE_SEND_ACCESS)
+                    .await
+                    .map_err(|_| AppError::Unauthorized("Invalid download token".into()))?;
+            if claims.sub != jwt::send_access_subject(&send_id, &file_id) {
+                return Err(AppError::Unauthorized("Download token mismatch".into()));
+            }
 
             let r2 = ctx.data.r2()?;
             let r2_key = format!("sends/{send_id}/{file_id}");

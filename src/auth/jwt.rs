@@ -7,7 +7,7 @@ use crate::db::models::User;
 use crate::error::{AppError, Result};
 use crate::util::{base64url_decode, base64url_encode, generate_uuid, now_epoch_secs};
 
-use super::claims::{LoginClaims, RefreshClaims, RegisterVerifyClaims};
+use super::claims::{LoginClaims, RefreshClaims, RegisterVerifyClaims, SendAccessClaims};
 
 const KV_PRIVATE_KEY: &str = "RSA_PRIVATE_KEY";
 const KV_PUBLIC_KEY: &str = "RSA_PUBLIC_KEY";
@@ -15,6 +15,7 @@ const JWT_HEADER: &str = r#"{"alg":"RS256","typ":"JWT"}"#;
 pub const ACCESS_TOKEN_EXPIRY: i64 = 7_200; // 2 hours
 const REFRESH_TOKEN_EXPIRY: i64 = 2_592_000; // 30 days
 const REGISTER_VERIFY_EXPIRY: i64 = 1_800; // 30 minutes
+const SEND_ACCESS_EXPIRY: i64 = 300; // 5 minutes
 
 /// Load the RSA private key from KV, or generate and store a new pair.
 pub async fn load_or_create_signing_key(kv: &KvStore) -> Result<web_sys::CryptoKey> {
@@ -152,6 +153,27 @@ const CLOCK_SKEW_TOLERANCE: i64 = 5;
 pub const TYPE_ACCESS: &str = "access_token";
 pub const TYPE_REFRESH: &str = "refresh_token";
 pub const TYPE_REGISTER_VERIFY: &str = "register_verify";
+pub const TYPE_SEND_ACCESS: &str = "send_access";
+
+pub fn send_access_subject(send_id: &str, file_id: &str) -> String {
+    format!("{send_id}/{file_id}")
+}
+
+pub async fn create_send_access_token(
+    send_id: &str,
+    file_id: &str,
+    signing_key: &web_sys::CryptoKey,
+) -> Result<String> {
+    let now = now_epoch_secs();
+    let claims = SendAccessClaims {
+        nbf: now,
+        exp: now + SEND_ACCESS_EXPIRY,
+        iss: ISSUER.into(),
+        sub: send_access_subject(send_id, file_id),
+        r#type: TYPE_SEND_ACCESS.into(),
+    };
+    sign_jwt(&claims, signing_key).await
+}
 
 /// Create a signed access token for the given user and device.
 pub async fn create_access_token(
