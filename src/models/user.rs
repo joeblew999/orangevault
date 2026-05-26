@@ -86,8 +86,8 @@ pub struct TokenRequest {
     pub password: Option<String>,
     #[allow(dead_code)]
     pub scope: Option<String>,
-    #[allow(dead_code)]
     pub client_id: Option<String>,
+    pub client_secret: Option<String>,
     #[serde(rename = "deviceType")]
     pub device_type: Option<i32>,
     #[serde(rename = "deviceIdentifier")]

@@ -187,6 +187,7 @@ pub async fn connect_token(
             match form.grant_type.as_str() {
                 "password" => handle_password_grant(&form, &db, &kv).await,
                 "refresh_token" => handle_refresh_grant(&form, &db, &kv).await,
+                "client_credentials" => handle_client_credentials_grant(&form, &db, &kv).await,
                 _ => Err(AppError::OAuth {
                     error: "unsupported_grant_type".into(),
                     error_description: "Unsupported grant type".into(),
@@ -303,6 +304,73 @@ async fn handle_password_grant(
         uuid: device_uuid,
         user_uuid: user.uuid.clone(),
         name: form.device_name.clone().unwrap_or_else(|| "Unknown".into()),
+        atype: form.device_type.unwrap_or(0),
+        push_uuid: None,
+        push_token: None,
+        refresh_token: refresh_token.clone(),
+        twofactor_remember: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    queries::upsert_device(db, &device).await?;
+
+    let response = build_login_response(access_token, refresh_token, &user);
+    Ok(Response::from_json(&response)?)
+}
+
+/// `client_credentials` grant — Bitwarden's personal-API-key login flow.
+/// `client_id` is `user.<uuid>`; `client_secret` is the api_key minted via
+/// `POST /api/accounts/api-key`. Bypasses 2FA (matches Bitwarden's docs).
+async fn handle_client_credentials_grant(
+    form: &TokenRequest,
+    db: &worker::D1Database,
+    kv: &worker::kv::KvStore,
+) -> crate::error::Result<Response> {
+    let client_id = form
+        .client_id
+        .as_deref()
+        .ok_or_else(|| oauth_invalid_grant("client_id is required"))?;
+    let client_secret = form
+        .client_secret
+        .as_deref()
+        .ok_or_else(|| oauth_invalid_grant("client_secret is required"))?;
+
+    let user_uuid = client_id
+        .strip_prefix("user.")
+        .ok_or_else(|| oauth_invalid_grant("client_id must start with 'user.'"))?;
+
+    let user = queries::find_user_by_uuid(db, user_uuid)
+        .await?
+        .ok_or_else(|| oauth_invalid_grant("invalid_client"))?;
+
+    let stored_api_key = user
+        .api_key
+        .as_deref()
+        .ok_or_else(|| oauth_invalid_grant("invalid_client"))?;
+
+    if !constant_time_eq(stored_api_key.as_bytes(), client_secret.as_bytes()) {
+        return Err(oauth_invalid_grant("invalid_client"));
+    }
+
+    // Mint a device entry for this api-key login (separate from password-
+    // login devices so revoking one doesn't affect the other).
+    let device_uuid = match form.device_identifier.as_deref().filter(|s| !s.is_empty()) {
+        Some(id) => match queries::find_device_by_uuid(db, id).await? {
+            Some(existing) if existing.user_uuid != user.uuid => generate_uuid(),
+            _ => id.to_string(),
+        },
+        None => generate_uuid(),
+    };
+    let now = now_utc();
+
+    let signing_key = jwt::load_or_create_signing_key(kv).await?;
+    let access_token = jwt::create_access_token(&user, &device_uuid, &signing_key).await?;
+    let refresh_token = jwt::create_refresh_token(&user.uuid, &device_uuid, &signing_key).await?;
+
+    let device = Device {
+        uuid: device_uuid,
+        user_uuid: user.uuid.clone(),
+        name: form.device_name.clone().unwrap_or_else(|| "API Key".into()),
         atype: form.device_type.unwrap_or(0),
         push_uuid: None,
         push_token: None,
