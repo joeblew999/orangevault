@@ -4,15 +4,14 @@ experimental = true
 # orangevault — fork of connyay/orangevault.
 # Bitwarden-compatible vault API on Cloudflare Workers (Rust → WASM).
 #
-# This fork carries deploy tooling (mise + fnox); the upstream is pure source.
-#
 # Fresh-machine spin-up:
-#   1. fnox set --global -p keychain CLOUDFLARE_API_TOKEN      # one-time
+#   1. fnox set --global -p keychain CLOUDFLARE_API_TOKEN
 #      fnox set --global -p keychain CLOUDFLARE_ACCOUNT_ID
-#   2. mise install                                              # node + wrangler + fnox
-#      rustup target add wasm32-unknown-unknown                  # if not already
-#   3. mise run dev      (local — miniflare via wrangler)
-#      mise run deploy   (production — pushes to Workers)
+#      fnox set --global -p keychain ORANGEVAULT_DOMAIN       # production domain
+#   2. mise install
+#      rustup target add wasm32-unknown-unknown
+#   3. mise run dev      (local — DOMAIN forced to http://localhost:8787)
+#      mise run deploy   (production — DOMAIN read from fnox)
 
 [tools]
 node              = "lts"
@@ -29,18 +28,32 @@ description = "Download the Bitwarden web vault static assets into ./web-vault/ 
 run         = "test -d web-vault || bash scripts/fetch-web-vault.sh"
 
 [tasks.dev]
-description = "Run locally via wrangler dev (miniflare-emulated D1/KV/R2/DO)."
+description = "Run locally via wrangler dev. DOMAIN overridden to http://localhost:8787 so /api/config returns the right origin."
 depends     = ["deps:update", "web-vault"]
-run         = "wrangler dev"
+run         = "wrangler dev --var DOMAIN:http://localhost:8787"
 
 [tasks.deploy]
-description = "Build + deploy to Cloudflare Workers. Validates that the deps step ran and web-vault is populated."
+description = "Build + deploy to Cloudflare Workers. Reads CLOUDFLARE_API_TOKEN + ORANGEVAULT_DOMAIN from fnox keychain."
 depends     = ["deps:update", "web-vault"]
-run         = "wrangler deploy"
+shell       = "nu -c"
+run = '''
+$env.CLOUDFLARE_API_TOKEN = (^fnox get CLOUDFLARE_API_TOKEN | str trim)
+let domain = (^fnox get ORANGEVAULT_DOMAIN | str trim)
+if ($domain | is-empty) {
+  print --stderr "✗ ORANGEVAULT_DOMAIN empty — set via: fnox set --global -p keychain ORANGEVAULT_DOMAIN"
+  exit 1
+}
+print $"→ wrangler deploy   DOMAIN=($domain)"
+^wrangler deploy --var $"DOMAIN:($domain)"
+'''
 
 [tasks.tail]
-description = "Tail live Worker logs."
-run         = "wrangler tail"
+description = "Tail live Worker logs. Reads CLOUDFLARE_API_TOKEN from fnox keychain."
+shell       = "nu -c"
+run = '''
+$env.CLOUDFLARE_API_TOKEN = (^fnox get CLOUDFLARE_API_TOKEN | str trim)
+^wrangler tail
+'''
 
 [tasks.test]
 description = "Run integration tests (Vitest + Miniflare). pretest builds the WASM worker."

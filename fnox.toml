@@ -1,13 +1,14 @@
-# orangevault — secrets resolved from the macOS keychain.
+# orangevault — secrets + config resolved from the macOS keychain.
 #
-# Write a secret with:   fnox set --global -p keychain <KEY>
+# Write a value with:   fnox set --global -p keychain <KEY>
 #
 # Shared item names ARE the cross-repo contract — renaming a key here
 # without updating every consumer breaks auth silently. Coordinate name
 # changes across repos.
 #
-# This file is the manifest of what the repo *needs* — fnox tasks in
-# mise.toml inject them as env vars at deploy/dev time via `fnox exec`.
+# This file is the manifest of what the repo *needs* — mise tasks read
+# these via `fnox get` and pass them to wrangler (as env vars for
+# secrets, as --var for public config like DOMAIN).
 
 [providers.keychain]
 type = "keychain"
@@ -17,6 +18,11 @@ service = "fnox"
 # Cloudflare deploy credentials (shared across every CF Workers repo).
 CLOUDFLARE_API_TOKEN     = { provider = "keychain", value = "CLOUDFLARE_API_TOKEN" }
 CLOUDFLARE_ACCOUNT_ID    = { provider = "keychain", value = "CLOUDFLARE_ACCOUNT_ID" }
+
+# Production domain — read by `mise run deploy` and passed to wrangler
+# via `--var DOMAIN:...`. Local dev forces http://localhost:8787 so the
+# keychain value never affects local runs.
+ORANGEVAULT_DOMAIN       = { provider = "keychain", value = "ORANGEVAULT_DOMAIN" }
 
 # orangevault doesn't have a server-managed JWT secret — RSA keypair is
 # generated lazily on first request and persisted in KV. Future additions:
