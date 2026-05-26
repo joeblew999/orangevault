@@ -4,7 +4,7 @@ experimental = true
 # orangevault — fork of connyay/orangevault.
 # Bitwarden-compatible vault API on Cloudflare Workers (Rust → WASM).
 #
-# Fresh-machine spin-up:
+# ── Fresh-machine spin-up ─────────────────────────────────────────────────
 #   1. fnox set --global -p keychain CLOUDFLARE_API_TOKEN
 #      fnox set --global -p keychain CLOUDFLARE_ACCOUNT_ID
 #      fnox set --global -p keychain ORANGEVAULT_DOMAIN       # production domain
@@ -13,11 +13,33 @@ experimental = true
 #   3. mise run d1:migrate    # one-time: create local D1 tables
 #   4. mise run dev           # local — wrangler dev (HTTPS, DOMAIN=https://localhost:8787)
 #      mise run deploy        # production — DOMAIN read from fnox
+#
+# ── Account / fnox bitwarden provider setup (ONE-TIME per account) ────────
+# Modern Bitwarden CLI dropped the `register` command; the only place that
+# does correct PBKDF2 + RSA + AES client-side is the web vault (or a future
+# custom Rust tool). So account creation is a *one-time* manual step:
+#
+#   a. Open the web vault:  https://<ORANGEVAULT_DOMAIN>/
+#      (e.g. https://orangevault.gedw99.workers.dev/)
+#   b. Click "Create Account", register email + master password.
+#   c. Login, Settings → Security → Keys → "View API Key".
+#      Save client_id + client_secret somewhere safe.
+#   d. fnox set --global -p keychain ORANGEVAULT_BW_CLIENTID
+#      fnox set --global -p keychain ORANGEVAULT_BW_CLIENTSECRET
+#      fnox set --global -p keychain ORANGEVAULT_MASTER_PASSWORD
+#   e. mise run bw:bootstrap
+#      → bw config server → bw login --apikey → bw unlock → prints BW_SESSION
+#
+# After that, every subsequent operation is fully automated — fnox's
+# bitwarden provider (configured per-repo in fnox.toml) can read/write
+# items in this orangevault from any mise task on any machine that has
+# the API key in its keychain.
 
 [tools]
-node              = "lts"
-"npm:wrangler"    = "latest"
-"github:jdx/fnox" = "1.24"
+node                 = "lts"
+"npm:wrangler"       = "latest"
+"npm:@bitwarden/cli" = "latest"   # bw — for post-registration account access
+"github:jdx/fnox"    = "1.24"
 # Rust toolchain comes from system rustup (stable + wasm32-unknown-unknown).
 
 [tasks."deps:update"]
@@ -65,3 +87,76 @@ description = "Run integration tests (Vitest + Miniflare). pretest builds the WA
 dir         = "{{ config_root }}/integration-tests"
 depends     = ["deps:update"]
 run         = "npm install && npm test"
+
+# ── bw CLI ↔ orangevault wiring ────────────────────────────────────────────
+# All bw:* tasks read ORANGEVAULT_DOMAIN + ORANGEVAULT_BW_CLIENTID +
+# ORANGEVAULT_BW_CLIENTSECRET + ORANGEVAULT_MASTER_PASSWORD from fnox.
+
+[tasks."bw:config"]
+description = "Point bw CLI at the orangevault server (idempotent)."
+shell       = "nu -c"
+run = '''
+let domain = (^fnox get ORANGEVAULT_DOMAIN | str trim)
+^bw config server $domain
+print $"✓ bw configured to ($domain)"
+'''
+
+[tasks."bw:login"]
+description = "Log into orangevault via API key (BW_CLIENTID + BW_CLIENTSECRET from fnox). Idempotent — no-op if already logged in."
+depends     = ["bw:config"]
+shell       = "nu -c"
+run = '''
+let status = (^bw status | from json | get status)
+if $status != "unauthenticated" {
+  print $"✓ already logged in \(status=($status)\)"
+  return
+}
+$env.BW_CLIENTID = (^fnox get ORANGEVAULT_BW_CLIENTID | str trim)
+$env.BW_CLIENTSECRET = (^fnox get ORANGEVAULT_BW_CLIENTSECRET | str trim)
+^bw login --apikey
+print "✓ bw logged in (locked)"
+'''
+
+[tasks."bw:unlock"]
+description = "Unlock the bw vault using the master password from fnox. Prints BW_SESSION to stdout (capture with: export BW_SESSION=$(mise run bw:unlock))."
+depends     = ["bw:login"]
+shell       = "nu -c"
+run = '''
+let pw = (^fnox get ORANGEVAULT_MASTER_PASSWORD | str trim)
+let session = ($pw | ^bw unlock --raw | str trim)
+print $session
+'''
+
+[tasks."bw:bootstrap"]
+description = "End-to-end post-registration setup: config + login + unlock. Run once per machine after manual web-UI account registration."
+shell       = "nu -c"
+run = '''
+let domain = (^fnox get ORANGEVAULT_DOMAIN | str trim)
+^bw config server $domain
+print $"  ✓ bw config server ($domain)"
+
+let status = (^bw status | from json | get status)
+if $status == "unauthenticated" {
+  $env.BW_CLIENTID = (^fnox get ORANGEVAULT_BW_CLIENTID | str trim)
+  $env.BW_CLIENTSECRET = (^fnox get ORANGEVAULT_BW_CLIENTSECRET | str trim)
+  ^bw login --apikey
+  print "  ✓ bw login --apikey"
+} else {
+  print $"  ✓ already logged in \(status=($status)\)"
+}
+
+let pw = (^fnox get ORANGEVAULT_MASTER_PASSWORD | str trim)
+let session = ($pw | ^bw unlock --raw | str trim)
+print "  ✓ bw unlock"
+print ""
+print "BW_SESSION exported to next shell:"
+print $"  export BW_SESSION=($session)"
+'''
+
+[tasks."bw:status"]
+description = "Show current bw status (logged in, locked, server URL)."
+run         = "bw status"
+
+[tasks."bw:logout"]
+description = "Log out of bw CLI. Use to reset state."
+run         = "bw logout"

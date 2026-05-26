@@ -24,6 +24,14 @@ CLOUDFLARE_ACCOUNT_ID    = { provider = "keychain", value = "CLOUDFLARE_ACCOUNT_
 # keychain value never affects local runs.
 ORANGEVAULT_DOMAIN       = { provider = "keychain", value = "ORANGEVAULT_DOMAIN" }
 
+# bw CLI ↔ orangevault wiring (set after one-time web-UI registration):
+#   ORANGEVAULT_BW_CLIENTID     — from Settings → Security → API Key
+#   ORANGEVAULT_BW_CLIENTSECRET — from Settings → Security → API Key
+#   ORANGEVAULT_MASTER_PASSWORD — needed to unlock the bw vault non-interactively
+ORANGEVAULT_BW_CLIENTID      = { provider = "keychain", value = "ORANGEVAULT_BW_CLIENTID" }
+ORANGEVAULT_BW_CLIENTSECRET  = { provider = "keychain", value = "ORANGEVAULT_BW_CLIENTSECRET" }
+ORANGEVAULT_MASTER_PASSWORD  = { provider = "keychain", value = "ORANGEVAULT_MASTER_PASSWORD" }
+
 # orangevault doesn't have a server-managed JWT secret — RSA keypair is
 # generated lazily on first request and persisted in KV. Future additions:
 #   ADMIN_TOKEN     (admin panel auth, when that ships)
