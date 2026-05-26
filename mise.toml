@@ -1,0 +1,49 @@
+[settings]
+experimental = true
+
+# orangevault — fork of connyay/orangevault.
+# Bitwarden-compatible vault API on Cloudflare Workers (Rust → WASM).
+#
+# This fork carries deploy tooling (mise + fnox); the upstream is pure source.
+#
+# Fresh-machine spin-up:
+#   1. fnox set --global -p keychain CLOUDFLARE_API_TOKEN      # one-time
+#      fnox set --global -p keychain CLOUDFLARE_ACCOUNT_ID
+#   2. mise install                                              # node + wrangler + fnox
+#      rustup target add wasm32-unknown-unknown                  # if not already
+#   3. mise run dev      (local — miniflare via wrangler)
+#      mise run deploy   (production — pushes to Workers)
+
+[tools]
+node              = "lts"
+"npm:wrangler"    = "latest"
+"github:jdx/fnox" = "1.24"
+# Rust toolchain comes from system rustup (stable + wasm32-unknown-unknown).
+
+[tasks."deps:update"]
+description = "Refresh Cargo.lock so wasm-bindgen >= 0.2.121 (required by worker-build@0.8.3; upstream lockfile pins 0.2.118 and the build aborts otherwise). Idempotent."
+run         = "cargo update"
+
+[tasks."web-vault"]
+description = "Download the Bitwarden web vault static assets into ./web-vault/ (skips if already present). Required by the [assets] binding in wrangler.toml."
+run         = "test -d web-vault || bash scripts/fetch-web-vault.sh"
+
+[tasks.dev]
+description = "Run locally via wrangler dev (miniflare-emulated D1/KV/R2/DO)."
+depends     = ["deps:update", "web-vault"]
+run         = "wrangler dev"
+
+[tasks.deploy]
+description = "Build + deploy to Cloudflare Workers. Validates that the deps step ran and web-vault is populated."
+depends     = ["deps:update", "web-vault"]
+run         = "wrangler deploy"
+
+[tasks.tail]
+description = "Tail live Worker logs."
+run         = "wrangler tail"
+
+[tasks.test]
+description = "Run integration tests (Vitest + Miniflare). pretest builds the WASM worker."
+dir         = "{{ config_root }}/integration-tests"
+depends     = ["deps:update"]
+run         = "npm install && npm test"
