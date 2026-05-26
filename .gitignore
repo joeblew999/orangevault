@@ -5,3 +5,4 @@ node_modules
 .wrangler
 *.wasm
 integration-tests/package-lock.json
+/cli/target

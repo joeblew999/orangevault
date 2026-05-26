@@ -226,3 +226,23 @@ run         = "rbw config show && echo '---' && rbw unlocked"
 [tasks."rbw:purge"]
 description = "Log out of rbw (purges local DB). Use to reset state."
 run         = "rbw purge"
+
+# ── orangevault-cli (native binary at ./cli) ───────────────────────────────
+# Operator CLI. Currently implements `register` so account creation is fully
+# scriptable (the bw/rbw CLIs don't have a real `register account` command).
+
+[tasks."cli:build"]
+description = "Build the orangevault-cli release binary at ./cli/target/release/orangevault-cli."
+dir         = "{{ config_root }}/cli"
+run         = "cargo build --release"
+
+[tasks."cli:register"]
+description = "Register a real Bitwarden-compatible account on the deployed orangevault. Reads server + email + master password from fnox."
+depends     = ["cli:build"]
+shell       = "nu -c"
+run = '''
+$env.OV_SERVER = (^fnox get ORANGEVAULT_DOMAIN | str trim)
+$env.OV_EMAIL = (^fnox get ORANGEVAULT_EMAIL | str trim)
+$env.OV_MASTER_PASSWORD = (^fnox get ORANGEVAULT_MASTER_PASSWORD | str trim)
+^./cli/target/release/orangevault-cli register
+'''

@@ -1,0 +1,30 @@
+[package]
+name = "orangevault-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "orangevault-cli"
+path = "src/main.rs"
+
+[dependencies]
+# rbw gives us PBKDF2/Argon2 master-key derivation + CipherString +
+# typed KdfType/api request structs. We don't use its main binary,
+# just the library modules.
+rbw         = "1"
+
+# Crypto we need on top of rbw for the registration request payload:
+rsa         = { version = "0.9", features = ["sha2"] }
+sha2        = "0.10"
+hmac        = "0.12"
+aes         = "0.8"
+cbc         = { version = "0.1", features = ["std"] }
+rand        = { version = "0.8", features = ["std", "std_rng"] }
+base64      = "0.22"
+
+reqwest     = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tokio       = { version = "1", features = ["macros", "rt-multi-thread"] }
+clap        = { version = "4", features = ["derive", "env"] }
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+anyhow      = "1"
