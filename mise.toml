@@ -39,6 +39,7 @@ experimental = true
 node                 = "lts"
 "npm:wrangler"       = "latest"
 "npm:@bitwarden/cli" = "latest"   # bw — for post-registration account access
+"cargo:rbw"          = "1.15"     # rbw — pure-Rust Bitwarden CLI with daemon-cached unlock (preferred over bw)
 "github:jdx/fnox"    = "1.24"
 # Rust toolchain comes from system rustup (stable + wasm32-unknown-unknown).
 
@@ -160,3 +161,68 @@ run         = "bw status"
 [tasks."bw:logout"]
 description = "Log out of bw CLI. Use to reset state."
 run         = "bw logout"
+
+# ── rbw CLI ↔ orangevault wiring ───────────────────────────────────────────
+# rbw is the pure-Rust Bitwarden CLI (doy/rbw). Preferred over bw because:
+#   - rbw-agent daemon holds keys in memory (one unlock per session, not
+#     per fetch), like ssh-agent
+#   - no Node dep
+#   - directly usable as a Rust library — basis for the register CLI
+# Configure fnox.toml with `backend = "rbw"` on your bitwarden provider
+# to route fnox lookups through rbw instead of bw.
+
+[tasks."rbw:config"]
+description = "Configure rbw to point at orangevault (base_url + email). Idempotent."
+shell       = "nu -c"
+run = '''
+let domain = (^fnox get ORANGEVAULT_DOMAIN | str trim)
+let email = (^fnox get ORANGEVAULT_EMAIL | str trim)
+^rbw config set base_url $domain
+^rbw config set email $email
+print $"✓ rbw configured: base_url=($domain) email=($email)"
+'''
+
+[tasks."rbw:register"]
+description = "Register this device with orangevault using API key. Reads ORANGEVAULT_BW_CLIENTID + ORANGEVAULT_BW_CLIENTSECRET from fnox. rbw will prompt for them interactively — paste when asked."
+depends     = ["rbw:config"]
+shell       = "nu -c"
+run = '''
+# rbw register prompts for personal API key client_id + client_secret.
+# Print the fnox-stored values so user can paste them in.
+let client_id = (^fnox get ORANGEVAULT_BW_CLIENTID | str trim)
+let client_secret = (^fnox get ORANGEVAULT_BW_CLIENTSECRET | str trim)
+print "rbw will prompt for:"
+print $"  client_id     = ($client_id)"
+print $"  client_secret = (***hidden, in fnox ORANGEVAULT_BW_CLIENTSECRET***)"
+print ""
+^rbw register
+'''
+
+[tasks."rbw:unlock"]
+description = "Unlock the rbw vault. Reads ORANGEVAULT_MASTER_PASSWORD from fnox and pipes to rbw."
+shell       = "nu -c"
+run = '''
+let pw = (^fnox get ORANGEVAULT_MASTER_PASSWORD | str trim)
+$pw | ^rbw unlock
+print "✓ rbw unlocked"
+'''
+
+[tasks."rbw:bootstrap"]
+description = "End-to-end: configure rbw + register device + unlock. Run once per machine after the manual web-UI account + API-key creation."
+depends     = ["rbw:config", "rbw:register"]
+shell       = "nu -c"
+run = '''
+let pw = (^fnox get ORANGEVAULT_MASTER_PASSWORD | str trim)
+$pw | ^rbw unlock
+^rbw sync
+print "✓ rbw bootstrapped + synced"
+print "  test:  rbw ls"
+'''
+
+[tasks."rbw:status"]
+description = "Show rbw config + lock state."
+run         = "rbw config show && echo '---' && rbw unlocked"
+
+[tasks."rbw:purge"]
+description = "Log out of rbw (purges local DB). Use to reset state."
+run         = "rbw purge"

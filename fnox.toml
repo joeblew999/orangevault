@@ -24,10 +24,12 @@ CLOUDFLARE_ACCOUNT_ID    = { provider = "keychain", value = "CLOUDFLARE_ACCOUNT_
 # keychain value never affects local runs.
 ORANGEVAULT_DOMAIN       = { provider = "keychain", value = "ORANGEVAULT_DOMAIN" }
 
-# bw CLI ↔ orangevault wiring (set after one-time web-UI registration):
+# bw / rbw CLI ↔ orangevault wiring (set after one-time web-UI registration):
+#   ORANGEVAULT_EMAIL           — your account email (rbw needs this in config)
 #   ORANGEVAULT_BW_CLIENTID     — from Settings → Security → API Key
 #   ORANGEVAULT_BW_CLIENTSECRET — from Settings → Security → API Key
-#   ORANGEVAULT_MASTER_PASSWORD — needed to unlock the bw vault non-interactively
+#   ORANGEVAULT_MASTER_PASSWORD — needed to unlock the vault non-interactively
+ORANGEVAULT_EMAIL            = { provider = "keychain", value = "ORANGEVAULT_EMAIL" }
 ORANGEVAULT_BW_CLIENTID      = { provider = "keychain", value = "ORANGEVAULT_BW_CLIENTID" }
 ORANGEVAULT_BW_CLIENTSECRET  = { provider = "keychain", value = "ORANGEVAULT_BW_CLIENTSECRET" }
 ORANGEVAULT_MASTER_PASSWORD  = { provider = "keychain", value = "ORANGEVAULT_MASTER_PASSWORD" }
