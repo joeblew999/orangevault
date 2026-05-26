@@ -27,10 +27,14 @@ run         = "cargo update"
 description = "Download the Bitwarden web vault static assets into ./web-vault/ (skips if already present). Required by the [assets] binding in wrangler.toml."
 run         = "test -d web-vault || bash scripts/fetch-web-vault.sh"
 
+[tasks."d1:migrate"]
+description = "Apply D1 migrations to the local miniflare DB. Idempotent. Run once before first dev/test."
+run         = "wrangler d1 migrations apply DB --local"
+
 [tasks.dev]
-description = "Run locally via wrangler dev. DOMAIN overridden to http://localhost:8787 so /api/config returns the right origin."
+description = "Run locally via wrangler dev. HTTPS (self-signed cert) + DOMAIN=https://localhost:8787 — required by Bitwarden clients and bw CLI, which reject plain http."
 depends     = ["deps:update", "web-vault"]
-run         = "wrangler dev --var DOMAIN:http://localhost:8787"
+run         = "wrangler dev --local-protocol https --var DOMAIN:https://localhost:8787"
 
 [tasks.deploy]
 description = "Build + deploy to Cloudflare Workers. Reads CLOUDFLARE_API_TOKEN + ORANGEVAULT_DOMAIN from fnox keychain."
