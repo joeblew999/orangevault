@@ -52,6 +52,21 @@ enum Cmd {
         #[arg(long, default_value_t = 600_000)]
         kdf_iterations: u32,
     },
+
+    /// Provision a personal API key for an existing account. Prints
+    /// `client_id\nclient_secret` to stdout — capture and store in fnox,
+    /// then `bw login --apikey` / `rbw register` work without the master
+    /// password.
+    GetApikey {
+        #[arg(long, env = "OV_SERVER")]
+        server: String,
+        #[arg(long, env = "OV_EMAIL")]
+        email: String,
+        #[arg(long, env = "OV_MASTER_PASSWORD")]
+        password: Option<String>,
+        #[arg(long, default_value_t = 600_000)]
+        kdf_iterations: u32,
+    },
 }
 
 #[tokio::main]
@@ -70,6 +85,18 @@ async fn main() -> Result<()> {
                 None => prompt_password()?,
             };
             register(&server, &email, &password, &name, kdf_iterations).await
+        }
+        Cmd::GetApikey {
+            server,
+            email,
+            password,
+            kdf_iterations,
+        } => {
+            let password = match password {
+                Some(p) => p,
+                None => prompt_password()?,
+            };
+            get_apikey(&server, &email, &password, kdf_iterations).await
         }
     }
 }
@@ -179,6 +206,101 @@ async fn register(
     } else {
         bail!("register failed: HTTP {status}\n{text}");
     }
+}
+
+async fn get_apikey(
+    server: &str,
+    email: &str,
+    password: &str,
+    kdf_iterations: u32,
+) -> Result<()> {
+    // 1. Re-derive the master_password_hash same way the server does.
+    let pw = make_password(password);
+    let identity = Identity::new(email, &pw, KdfType::Pbkdf2, kdf_iterations, None, None)
+        .map_err(|e| anyhow::anyhow!("identity derivation: {e}"))?;
+    let master_password_hash = B64.encode(identity.master_password_hash.hash());
+
+    // 2. Login via /identity/connect/token (grant_type=password) to get
+    //    access_token + user uuid.
+    let client = reqwest::Client::new();
+    let token_url = format!("{}/identity/connect/token", server.trim_end_matches('/'));
+    let token_form: Vec<(&str, &str)> = vec![
+        ("grant_type", "password"),
+        ("username", email),
+        ("password", &master_password_hash),
+        ("scope", "api offline_access"),
+        ("client_id", "web"),
+        ("deviceType", "10"),
+        ("deviceIdentifier", "orangevault-cli-get-apikey"),
+        ("deviceName", "orangevault-cli"),
+    ];
+    let token_res = client.post(&token_url).form(&token_form).send().await?;
+    if !token_res.status().is_success() {
+        let s = token_res.status();
+        let body = token_res.text().await.unwrap_or_default();
+        bail!("login failed: HTTP {s}\n{body}");
+    }
+    let token_body: TokenResponse = token_res.json().await?;
+
+    // 3. POST /api/accounts/api-key with masterPasswordHash to mint /
+    //    retrieve the api_key. user_id we'll pull from /api/sync since
+    //    the access_token's sub claim isn't easily parsed without a JWT
+    //    crate.
+    let sync = client
+        .get(format!("{}/api/sync", server.trim_end_matches('/')))
+        .bearer_auth(&token_body.access_token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<SyncResponse>()
+        .await?;
+    let user_id = sync.profile.id;
+
+    let api_key_url = format!(
+        "{}/api/accounts/api-key",
+        server.trim_end_matches('/')
+    );
+    let api_key_res = client
+        .post(&api_key_url)
+        .bearer_auth(&token_body.access_token)
+        .json(&serde_json::json!({ "masterPasswordHash": master_password_hash }))
+        .send()
+        .await?;
+    if !api_key_res.status().is_success() {
+        let s = api_key_res.status();
+        let body = api_key_res.text().await.unwrap_or_default();
+        bail!("get-apikey failed: HTTP {s}\n{body}");
+    }
+    let api_key_body: ApiKeyResponse = api_key_res.json().await?;
+
+    // Output is plain stdout — easy to capture from a shell:
+    //   eval $(orangevault-cli get-apikey ... | sed 's/^/export /')
+    println!("BW_CLIENTID=user.{user_id}");
+    println!("BW_CLIENTSECRET={}", api_key_body.api_key);
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct TokenResponse {
+    access_token: String,
+}
+
+#[derive(Deserialize)]
+struct SyncResponse {
+    #[serde(rename = "Profile")]
+    profile: SyncProfile,
+}
+
+#[derive(Deserialize)]
+struct SyncProfile {
+    #[serde(rename = "Id")]
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct ApiKeyResponse {
+    #[serde(rename = "apiKey", alias = "ApiKey")]
+    api_key: String,
 }
 
 /// Bitwarden CipherString type 2: `2.{iv_b64}|{ct_b64}|{mac_b64}`.
