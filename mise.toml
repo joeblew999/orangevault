@@ -10,8 +10,9 @@ experimental = true
 #      fnox set --global -p keychain ORANGEVAULT_DOMAIN       # production domain
 #   2. mise install
 #      rustup target add wasm32-unknown-unknown
-#   3. mise run dev      (local — DOMAIN forced to http://localhost:8787)
-#      mise run deploy   (production — DOMAIN read from fnox)
+#   3. mise run d1:migrate    # one-time: create local D1 tables
+#   4. mise run dev           # local — wrangler dev (HTTPS, DOMAIN=https://localhost:8787)
+#      mise run deploy        # production — DOMAIN read from fnox
 
 [tools]
 node              = "lts"
@@ -32,8 +33,8 @@ description = "Apply D1 migrations to the local miniflare DB. Idempotent. Run on
 run         = "wrangler d1 migrations apply DB --local"
 
 [tasks.dev]
-description = "Run locally via wrangler dev. HTTPS (self-signed cert) + DOMAIN=https://localhost:8787 — required by Bitwarden clients and bw CLI, which reject plain http."
-depends     = ["deps:update", "web-vault"]
+description = "Run locally via wrangler dev. HTTPS (self-signed cert) + DOMAIN=https://localhost:8787 — required by Bitwarden clients, which reject plain http."
+depends     = ["deps:update", "web-vault", "d1:migrate"]
 run         = "wrangler dev --local-protocol https --var DOMAIN:https://localhost:8787"
 
 [tasks.deploy]
