@@ -8,12 +8,13 @@ name = "orangevault-cli"
 path = "src/main.rs"
 
 [dependencies]
-# rbw gives us PBKDF2/Argon2 master-key derivation + CipherString +
-# typed KdfType/api request structs. We don't use its main binary,
-# just the library modules.
-rbw         = "1"
+# Bitwarden master-key derivation (PBKDF2 → master key + hash, HKDF stretch →
+# enc/mac keys) — pure-Rust, cross-platform. Was rbw, which pulls unix-only
+# `daemonize` and won't build on Windows.
+pbkdf2      = "0.12"
+hkdf        = "0.12"
 
-# Crypto we need on top of rbw for the registration request payload:
+# Crypto for the registration request payload:
 rsa         = { version = "0.9", features = ["sha2"] }
 sha2        = "0.10"
 hmac        = "0.12"

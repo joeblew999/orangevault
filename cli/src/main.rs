@@ -5,17 +5,14 @@
 //!              (replaces the missing `bw register` step so account creation
 //!              is fully scriptable end-to-end)
 //!
-//! Crypto leans on the `rbw` library for the well-tested PBKDF2/Argon2
-//! master-key derivation; the symmetric-key encryption (CipherString
-//! format) and RSA keypair generation are done inline here.
+//! All crypto is done inline with pure-Rust crates (PBKDF2 + HKDF master-key
+//! derivation, AES-CBC + HMAC CipherString, RSA keypair) — no rbw, so it builds
+//! on Windows too.
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use clap::{Parser, Subcommand};
-use rbw::api::KdfType;
-use rbw::identity::Identity;
-use rbw::locked::Password;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
@@ -101,10 +98,47 @@ async fn main() -> Result<()> {
     }
 }
 
-fn make_password(s: &str) -> Password {
-    let mut v = rbw::locked::Vec::new();
-    v.extend(s.as_bytes().iter().copied());
-    Password::new(v)
+/// The master-key material the Bitwarden register/login payloads need, derived
+/// exactly as rbw/Bitwarden do for the Pbkdf2 KDF:
+///   master_key            = PBKDF2-HMAC-SHA256(password, salt=email_lower, iters, 32)
+///   master_password_hash  = PBKDF2-HMAC-SHA256(master_key, salt=password, 1, 32)  → base64
+///   enc_key / mac_key      = HKDF-Expand-SHA256(prk=master_key, "enc" / "mac", 32)
+struct MasterKeys {
+    enc_key: [u8; 32],
+    mac_key: [u8; 32],
+    master_password_hash_b64: String,
+}
+
+fn derive_keys(email: &str, password: &str, kdf_iterations: u32) -> Result<MasterKeys> {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+    type HmacSha256 = hmac::Hmac<Sha256>;
+
+    if kdf_iterations == 0 {
+        bail!("kdf_iterations must be >= 1");
+    }
+    let email = email.trim().to_lowercase();
+    let pw = password.as_bytes();
+
+    let mut master_key = [0u8; 32];
+    pbkdf2::pbkdf2::<HmacSha256>(pw, email.as_bytes(), kdf_iterations, &mut master_key)
+        .map_err(|e| anyhow::anyhow!("pbkdf2 master_key: {e}"))?;
+
+    let mut mph = [0u8; 32];
+    pbkdf2::pbkdf2::<HmacSha256>(&master_key, pw, 1, &mut mph)
+        .map_err(|e| anyhow::anyhow!("pbkdf2 master_password_hash: {e}"))?;
+
+    let hk = Hkdf::<Sha256>::from_prk(&master_key).map_err(|_| anyhow::anyhow!("hkdf from_prk"))?;
+    let mut enc_key = [0u8; 32];
+    hk.expand(b"enc", &mut enc_key).map_err(|_| anyhow::anyhow!("hkdf expand enc"))?;
+    let mut mac_key = [0u8; 32];
+    hk.expand(b"mac", &mut mac_key).map_err(|_| anyhow::anyhow!("hkdf expand mac"))?;
+
+    Ok(MasterKeys {
+        enc_key,
+        mac_key,
+        master_password_hash_b64: B64.encode(mph),
+    })
 }
 
 fn prompt_password() -> Result<String> {
@@ -126,12 +160,9 @@ async fn register(
     name: &str,
     kdf_iterations: u32,
 ) -> Result<()> {
-    // 1. Derive the master key + master_password_hash via rbw.
-    let pw = make_password(password);
-    let identity = Identity::new(email, &pw, KdfType::Pbkdf2, kdf_iterations, None, None)
-        .map_err(|e| anyhow::anyhow!("identity derivation: {e}"))?;
-
-    let master_password_hash_b64 = B64.encode(identity.master_password_hash.hash());
+    // 1. Derive the master key + master_password_hash (PBKDF2 + HKDF).
+    let mk = derive_keys(email, password, kdf_iterations)?;
+    let master_password_hash_b64 = mk.master_password_hash_b64.clone();
 
     // 2. Generate a random 64-byte symmetric key (32 enc + 32 mac).
     use rand::RngCore;
@@ -141,7 +172,7 @@ async fn register(
     // 3. Encrypt sym_key with the master key (AES-256-CBC + HMAC-SHA256).
     //    Bitwarden CipherString type 2 = "2.{iv}|{ct}|{mac}" (all base64).
     let key_cipherstring =
-        encrypt_cipherstring_type2(identity.keys.enc_key(), identity.keys.mac_key(), &sym_key)?;
+        encrypt_cipherstring_type2(&mk.enc_key, &mk.mac_key, &sym_key)?;
 
     // 4. Generate an RSA-2048 keypair.
     let mut rng = rand::rngs::OsRng;
@@ -216,10 +247,7 @@ async fn get_apikey(
     kdf_iterations: u32,
 ) -> Result<()> {
     // 1. Re-derive the master_password_hash same way the server does.
-    let pw = make_password(password);
-    let identity = Identity::new(email, &pw, KdfType::Pbkdf2, kdf_iterations, None, None)
-        .map_err(|e| anyhow::anyhow!("identity derivation: {e}"))?;
-    let master_password_hash = B64.encode(identity.master_password_hash.hash());
+    let master_password_hash = derive_keys(email, password, kdf_iterations)?.master_password_hash_b64;
 
     // 2. Login via /identity/connect/token (grant_type=password) to get
     //    access_token + user uuid.

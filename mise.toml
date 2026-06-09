@@ -25,8 +25,8 @@ experimental = true
 #   b. mise run cli:provision
 #      → register (idempotent) + mint API key + store ORANGEVAULT_BW_CLIENTID /
 #        ORANGEVAULT_BW_CLIENTSECRET in the keychain. One command.
-#   c. mise run bw:bootstrap            (or rbw:bootstrap)
-#      → bw config server → bw login --apikey → bw unlock → prints BW_SESSION
+#   c. mise run rbw:bootstrap
+#      → rbw config → rbw login (apikey) → rbw unlock (agent holds the session)
 #
 # (The old manual path — web vault "Create Account" → Settings → Security → Keys
 # → "View API Key" — still works, but cli:provision replaces it.)
@@ -49,8 +49,7 @@ includes = [
 [tools]
 node                 = "lts"
 "npm:wrangler"       = "latest"
-"npm:@bitwarden/cli" = "latest"   # bw — for post-registration account access
-"cargo:rbw"          = "1.15"     # rbw — pure-Rust Bitwarden CLI with daemon-cached unlock (preferred over bw)
+"cargo:rbw"          = "1.15"     # rbw — the one Bitwarden client (pure-Rust, daemon-cached unlock)
 "github:jdx/fnox"    = "1.24"
 # Rust toolchain comes from system rustup (stable + wasm32-unknown-unknown).
 
@@ -73,11 +72,13 @@ let triple = (^rustc -vV | lines | where {|l| $l | str starts-with "host:" } | f
 cd cli
 ^cargo build --release
 cd ..
+let exe = (if $nu.os-info.name == "windows" { ".exe" } else { "" })
+let bin = $"orangevault-cli($exe)"
 let out = ("dist" | path join $"orangevault-cli-($triple)")
 rm -rf $out
 mkdir $out
-cp ("cli" | path join "target" "release" "orangevault-cli") ($out | path join "orangevault-cli")
-print ("  ok " + $out + "/orangevault-cli")
+cp ("cli" | path join "target" "release" $bin) ($out | path join $bin)
+print ("  ok " + $out + "/" + $bin)
 '''
 
 [tasks."deps:update"]
@@ -126,87 +127,14 @@ dir         = "{{ config_root }}/integration-tests"
 depends     = ["deps:update"]
 run         = "npm install && npm test"
 
-# ── bw CLI ↔ orangevault wiring ────────────────────────────────────────────
-# All bw:* tasks read ORANGEVAULT_DOMAIN + ORANGEVAULT_BW_CLIENTID +
-# ORANGEVAULT_BW_CLIENTSECRET + ORANGEVAULT_MASTER_PASSWORD from fnox.
-
-[tasks."bw:config"]
-description = "Point bw CLI at the orangevault server (idempotent)."
-shell       = "nu -c"
-run = '''
-let domain = (^fnox get ORANGEVAULT_DOMAIN | str trim)
-^bw config server $domain
-print $"✓ bw configured to ($domain)"
-'''
-
-[tasks."bw:login"]
-description = "Log into orangevault via API key (BW_CLIENTID + BW_CLIENTSECRET from fnox). Idempotent — no-op if already logged in."
-depends     = ["bw:config"]
-shell       = "nu -c"
-run = '''
-let status = (^bw status | from json | get status)
-if $status != "unauthenticated" {
-  print $"✓ already logged in \(status=($status)\)"
-  return
-}
-$env.BW_CLIENTID = (^fnox get ORANGEVAULT_BW_CLIENTID | str trim)
-$env.BW_CLIENTSECRET = (^fnox get ORANGEVAULT_BW_CLIENTSECRET | str trim)
-^bw login --apikey
-print "✓ bw logged in (locked)"
-'''
-
-[tasks."bw:unlock"]
-description = "Unlock the bw vault using the master password from fnox. Prints BW_SESSION to stdout (capture with: export BW_SESSION=$(mise run bw:unlock))."
-depends     = ["bw:login"]
-shell       = "nu -c"
-run = '''
-let pw = (^fnox get ORANGEVAULT_MASTER_PASSWORD | str trim)
-let session = ($pw | ^bw unlock --raw | str trim)
-print $session
-'''
-
-[tasks."bw:bootstrap"]
-description = "End-to-end post-registration setup: config + login + unlock. Run once per machine after manual web-UI account registration."
-shell       = "nu -c"
-run = '''
-let domain = (^fnox get ORANGEVAULT_DOMAIN | str trim)
-^bw config server $domain
-print $"  ✓ bw config server ($domain)"
-
-let status = (^bw status | from json | get status)
-if $status == "unauthenticated" {
-  $env.BW_CLIENTID = (^fnox get ORANGEVAULT_BW_CLIENTID | str trim)
-  $env.BW_CLIENTSECRET = (^fnox get ORANGEVAULT_BW_CLIENTSECRET | str trim)
-  ^bw login --apikey
-  print "  ✓ bw login --apikey"
-} else {
-  print $"  ✓ already logged in \(status=($status)\)"
-}
-
-let pw = (^fnox get ORANGEVAULT_MASTER_PASSWORD | str trim)
-let session = ($pw | ^bw unlock --raw | str trim)
-print "  ✓ bw unlock"
-print ""
-print "BW_SESSION exported to next shell:"
-print $"  export BW_SESSION=($session)"
-'''
-
-[tasks."bw:status"]
-description = "Show current bw status (logged in, locked, server URL)."
-run         = "bw status"
-
-[tasks."bw:logout"]
-description = "Log out of bw CLI. Use to reset state."
-run         = "bw logout"
-
 # ── rbw CLI ↔ orangevault wiring ───────────────────────────────────────────
-# rbw is the pure-Rust Bitwarden CLI (doy/rbw). Preferred over bw because:
-#   - rbw-agent daemon holds keys in memory (one unlock per session, not
-#     per fetch), like ssh-agent
-#   - no Node dep
-#   - directly usable as a Rust library — basis for the register CLI
-# Configure fnox.toml with `backend = "rbw"` on your bitwarden provider
-# to route fnox lookups through rbw instead of bw.
+# rbw (doy/rbw) is the ONE Bitwarden client we use — pure-Rust, with an
+# ssh-agent-style daemon that holds keys in memory (one unlock per session, not
+# per fetch) and no Node dependency. (The bw/@bitwarden/cli path was dropped —
+# rbw covers everything fnox's bitwarden provider needs.) All rbw:* tasks read
+# ORANGEVAULT_DOMAIN + ORANGEVAULT_EMAIL + ORANGEVAULT_BW_CLIENTID +
+# ORANGEVAULT_BW_CLIENTSECRET + ORANGEVAULT_MASTER_PASSWORD from fnox.
+# Configure fnox.toml with `backend = "rbw"` on your bitwarden provider.
 
 [tasks."rbw:config"]
 description = "Configure rbw to point at orangevault (base_url + email). Idempotent."
@@ -323,5 +251,5 @@ if ($cid | is-empty) or ($csec | is-empty) { print -e "✗ get-apikey returned n
 $cid | ^fnox set --global -p keychain ORANGEVAULT_BW_CLIENTID
 $csec | ^fnox set --global -p keychain ORANGEVAULT_BW_CLIENTSECRET
 print "  ✓ stored ORANGEVAULT_BW_CLIENTID + ORANGEVAULT_BW_CLIENTSECRET (keychain)"
-print "Next: mise run bw:bootstrap   (or rbw:bootstrap) — then fnox's bitwarden provider can read/write items."
+print "Next: mise run rbw:bootstrap — then fnox's bitwarden provider can read/write items."
 '''
