@@ -11,6 +11,12 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# The publish job creates the GitHub release — the repo's default token is
+# read-only, so the caller must elevate it (a reusable workflow can't grant
+# itself more than the caller has).
+permissions:
+  contents: write
+
 jobs:
   release:
     uses: joeblew999/.github/.github/workflows/reusable-mise-release.yml@v0.42.0
