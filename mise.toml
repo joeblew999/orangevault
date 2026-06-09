@@ -15,20 +15,21 @@ experimental = true
 #      mise run deploy        # production — DOMAIN read from fnox
 #
 # ── Account / fnox bitwarden provider setup (ONE-TIME per account) ────────
-# Modern Bitwarden CLI dropped the `register` command; the only place that
-# does correct PBKDF2 + RSA + AES client-side is the web vault (or a future
-# custom Rust tool). So account creation is a *one-time* manual step:
+# Modern Bitwarden CLI dropped `register`, but orangevault-cli does the correct
+# client-side crypto (PBKDF2 + RSA + AES), so account creation is now FULLY
+# SCRIPTABLE — no web vault needed:
 #
-#   a. Open the web vault:  https://<ORANGEVAULT_DOMAIN>/
-#      (e.g. https://orangevault.gedw99.workers.dev/)
-#   b. Click "Create Account", register email + master password.
-#   c. Login, Settings → Security → Keys → "View API Key".
-#      Save client_id + client_secret somewhere safe.
-#   d. fnox set --global -p keychain ORANGEVAULT_BW_CLIENTID
-#      fnox set --global -p keychain ORANGEVAULT_BW_CLIENTSECRET
-#      fnox set --global -p keychain ORANGEVAULT_MASTER_PASSWORD
-#   e. mise run bw:bootstrap
+#   a. Pick an identity (no email delivery happens — any unique address works):
+#      fnox set --global -p keychain ORANGEVAULT_EMAIL            # e.g. me@example.com
+#      fnox set --global -p keychain ORANGEVAULT_MASTER_PASSWORD  # a strong password
+#   b. mise run cli:provision
+#      → register (idempotent) + mint API key + store ORANGEVAULT_BW_CLIENTID /
+#        ORANGEVAULT_BW_CLIENTSECRET in the keychain. One command.
+#   c. mise run bw:bootstrap            (or rbw:bootstrap)
 #      → bw config server → bw login --apikey → bw unlock → prints BW_SESSION
+#
+# (The old manual path — web vault "Create Account" → Settings → Security → Keys
+# → "View API Key" — still works, but cli:provision replaces it.)
 #
 # After that, every subsequent operation is fully automated — fnox's
 # bitwarden provider (configured per-repo in fnox.toml) can read/write
@@ -245,4 +246,46 @@ $env.OV_SERVER = (^fnox get ORANGEVAULT_DOMAIN | str trim)
 $env.OV_EMAIL = (^fnox get ORANGEVAULT_EMAIL | str trim)
 $env.OV_MASTER_PASSWORD = (^fnox get ORANGEVAULT_MASTER_PASSWORD | str trim)
 ^./cli/target/release/orangevault-cli register
+'''
+
+[tasks."cli:get-apikey"]
+description = "Mint the API key (client_id/secret) for an existing account — no web vault. Prints BW_CLIENTID / BW_CLIENTSECRET. Reads server/email/password from fnox."
+depends     = ["cli:build"]
+shell       = "nu -c"
+run = '''
+$env.OV_SERVER = (^fnox get ORANGEVAULT_DOMAIN | str trim)
+$env.OV_EMAIL = (^fnox get ORANGEVAULT_EMAIL | str trim)
+$env.OV_MASTER_PASSWORD = (^fnox get ORANGEVAULT_MASTER_PASSWORD | str trim)
+^./cli/target/release/orangevault-cli get-apikey
+'''
+
+# cli:provision — TURNKEY account bootstrap, no web vault. register (idempotent:
+# an existing account is fine) → get-apikey → store ORANGEVAULT_BW_CLIENTID /
+# ORANGEVAULT_BW_CLIENTSECRET in the keychain. Reads server/email/master password
+# from fnox (set ORANGEVAULT_EMAIL + ORANGEVAULT_MASTER_PASSWORD first). This is
+# the whole "create an account other repos can read secrets from" flow in one task.
+[tasks."cli:provision"]
+description = "Turnkey: register (if needed) + mint API key + store BW_CLIENTID/SECRET in keychain. No web vault."
+depends     = ["cli:build"]
+shell       = "nu -c"
+run = '''
+$env.OV_SERVER = (^fnox get ORANGEVAULT_DOMAIN | str trim)
+$env.OV_EMAIL = (^fnox get ORANGEVAULT_EMAIL | str trim)
+$env.OV_MASTER_PASSWORD = (^fnox get ORANGEVAULT_MASTER_PASSWORD | str trim)
+let cli = "./cli/target/release/orangevault-cli"
+
+# Register — an already-registered account returns non-zero ("already exists"); that
+# is fine, we only need it to exist before minting the key.
+let reg = (do { ^$cli register --name "orangevault account" } | complete)
+if $reg.exit_code == 0 { print "  ✓ account registered" } else { print "  • account already exists (continuing)" }
+
+# Mint client_id/secret and store under ORANGEVAULT_BW_*.
+let out = (^$cli get-apikey | lines)
+let cid = ($out | where {|l| $l | str starts-with "BW_CLIENTID=" } | first | str replace "BW_CLIENTID=" "")
+let csec = ($out | where {|l| $l | str starts-with "BW_CLIENTSECRET=" } | first | str replace "BW_CLIENTSECRET=" "")
+if ($cid | is-empty) or ($csec | is-empty) { print -e "✗ get-apikey returned no key"; exit 1 }
+$cid | ^fnox set --global -p keychain ORANGEVAULT_BW_CLIENTID
+$csec | ^fnox set --global -p keychain ORANGEVAULT_BW_CLIENTSECRET
+print "  ✓ stored ORANGEVAULT_BW_CLIENTID + ORANGEVAULT_BW_CLIENTSECRET (keychain)"
+print "Next: mise run bw:bootstrap   (or rbw:bootstrap) — then fnox's bitwarden provider can read/write items."
 '''

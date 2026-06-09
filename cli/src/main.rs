@@ -198,10 +198,11 @@ async fn register(
     if status.is_success() {
         eprintln!("✓ registered {email} on {server}");
         eprintln!();
-        eprintln!("Next: log into the web vault, Settings → Security → Keys →");
-        eprintln!("View API Key, save client_id/client_secret to fnox:");
-        eprintln!("  fnox set --global -p keychain ORANGEVAULT_BW_CLIENTID");
-        eprintln!("  fnox set --global -p keychain ORANGEVAULT_BW_CLIENTSECRET");
+        eprintln!("Next: mint the API key (no web vault needed) — same server/email/password:");
+        eprintln!("  orangevault-cli get-apikey   # prints BW_CLIENTID / BW_CLIENTSECRET");
+        eprintln!("then store them in fnox:");
+        eprintln!("  ... | fnox set --global -p keychain ORANGEVAULT_BW_CLIENTID");
+        eprintln!("  ... | fnox set --global -p keychain ORANGEVAULT_BW_CLIENTSECRET");
         Ok(())
     } else {
         bail!("register failed: HTTP {status}\n{text}");
