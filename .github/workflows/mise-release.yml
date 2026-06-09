@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   release:
-    uses: joeblew999/.github/.github/workflows/reusable-mise-release.yml@v0.42.0
+    uses: joeblew999/.github/.github/workflows/reusable-mise-release.yml@main
     with:
       build-task: dist
       os-matrix: '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "macos-13"]'
