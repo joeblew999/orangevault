@@ -1,0 +1,17 @@
+name: mise CI
+
+# Thin stub — the reusable workflow runs `mise run ci` (the SAME task you run
+# locally) across the OS matrix. Windows excluded: the CLI depends on rbw, which
+# pulls unix-only crates (daemonize). See joeblew999/.github reusable-mise-ci.yml.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: joeblew999/.github/.github/workflows/reusable-mise-ci.yml@v0.39.0
+    with:
+      task: ci
+      os-matrix: '["ubuntu-latest", "macos-latest"]'
+      sccache: true

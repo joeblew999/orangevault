@@ -36,6 +36,16 @@ experimental = true
 # items in this orangevault from any mise task on any machine that has
 # the API key in its keychain.
 
+# Shared joeblew999/.github task libs. Same `mise run` tasks run locally AND in
+# the GitHub workflows (isomorphic) — ci = the shared guards (extended below with
+# the CLI build); release:pack + release:github drive multi-arch releases.
+[task_config]
+includes = [
+  "git::https://github.com/joeblew999/.github.git//tasks/ci.toml?ref=v0.39.0",
+  "git::https://github.com/joeblew999/.github.git//tasks/mise.toml?ref=v0.39.0",
+  "git::https://github.com/joeblew999/.github.git//tasks/release.toml?ref=v0.39.0",
+]
+
 [tools]
 node                 = "lts"
 "npm:wrangler"       = "latest"
@@ -43,6 +53,38 @@ node                 = "lts"
 "cargo:rbw"          = "1.15"     # rbw — pure-Rust Bitwarden CLI with daemon-cached unlock (preferred over bw)
 "github:jdx/fnox"    = "1.24"
 # Rust toolchain comes from system rustup (stable + wasm32-unknown-unknown).
+
+# `mise run ci` — the SAME task locally and in .github/workflows/mise.yml.
+# v0.39.0's ci.toml ships the guard tasks but no `ci` umbrella, so we compose it:
+# the shared static guards + this repo's CLI build (compiles orangevault-cli on
+# every OS in the matrix).
+[tasks.ci]
+depends = [
+  "ci:check-global",
+  "ci:check-toml-tasks",
+  "ci:check-workflow-nu",
+  "ci:parse-check",
+  "cli:build",
+]
+
+# dist — build orangevault-cli for THIS host's arch into a goreleaser-named
+# staging subdir, so `release:pack` archives it as orangevault-cli-<triple>.tar.gz
+# (mise's github backend resolves the right asset per platform). No cross-compile:
+# each native runner runs this same task for its own arch.
+[tasks."dist"]
+description = "Build orangevault-cli for the host arch into dist/orangevault-cli-<triple>/ (then release:pack)."
+shell       = "nu -c"
+run = '''
+let triple = (^rustc -vV | lines | where {|l| $l | str starts-with "host:" } | first | str replace "host: " "" | str trim)
+cd cli
+^cargo build --release
+cd ..
+let out = ("dist" | path join $"orangevault-cli-($triple)")
+rm -rf $out
+mkdir $out
+cp ("cli" | path join "target" "release" "orangevault-cli") ($out | path join "orangevault-cli")
+print ("  ok " + $out + "/orangevault-cli")
+'''
 
 [tasks."deps:update"]
 description = "Refresh Cargo.lock so wasm-bindgen >= 0.2.121 (required by worker-build@0.8.3; upstream lockfile pins 0.2.118 and the build aborts otherwise). Idempotent."
