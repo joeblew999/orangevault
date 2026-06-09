@@ -1,0 +1,19 @@
+name: mise release
+
+# On a version tag, build orangevault-cli on each native runner (no cross-compile)
+# and publish one GitHub release with all per-OS/arch binaries. Thin stub — the
+# reusable workflow owns the build→pack→publish flow; this repo just provides the
+# `dist` task. Windows excluded: rbw pulls unix-only crates (daemonize).
+#   git tag vX.Y.Z && git push origin vX.Y.Z
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    uses: joeblew999/.github/.github/workflows/reusable-mise-release.yml@v0.42.0
+    with:
+      build-task: dist
+      os-matrix: '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "macos-13"]'
