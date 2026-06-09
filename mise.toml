@@ -41,9 +41,9 @@ experimental = true
 # the CLI build); release:pack + release:github drive multi-arch releases.
 [task_config]
 includes = [
-  "git::https://github.com/joeblew999/.github.git//tasks/ci.toml?ref=v0.39.0",
-  "git::https://github.com/joeblew999/.github.git//tasks/mise.toml?ref=v0.39.0",
-  "git::https://github.com/joeblew999/.github.git//tasks/release.toml?ref=v0.39.0",
+  "git::https://github.com/joeblew999/.github.git//tasks/ci.toml?ref=v0.40.1",
+  "git::https://github.com/joeblew999/.github.git//tasks/mise.toml?ref=v0.40.1",
+  "git::https://github.com/joeblew999/.github.git//tasks/release.toml?ref=v0.40.1",
 ]
 
 [tools]
@@ -54,18 +54,12 @@ node                 = "lts"
 "github:jdx/fnox"    = "1.24"
 # Rust toolchain comes from system rustup (stable + wasm32-unknown-unknown).
 
-# `mise run ci` — the SAME task locally and in .github/workflows/mise.yml.
-# v0.39.0's ci.toml ships the guard tasks but no `ci` umbrella, so we compose it:
-# the shared static guards + this repo's CLI build (compiles orangevault-cli on
+# `mise run ci` — the SAME task locally and in .github/workflows/mise.yml. mise
+# MERGES this with the shared `ci` umbrella (ci:check-global + ci:check-nu), so
+# the guards run AND we add this repo's CLI build (compiles orangevault-cli on
 # every OS in the matrix).
 [tasks.ci]
-depends = [
-  "ci:check-global",
-  "ci:check-toml-tasks",
-  "ci:check-workflow-nu",
-  "ci:parse-check",
-  "cli:build",
-]
+depends = ["cli:build"]
 
 # dist — build orangevault-cli for THIS host's arch into a goreleaser-named
 # staging subdir, so `release:pack` archives it as orangevault-cli-<triple>.tar.gz
