@@ -41,9 +41,9 @@ experimental = true
 # the CLI build); release:pack + release:github drive multi-arch releases.
 [task_config]
 includes = [
-  "git::https://github.com/joeblew999/.github.git//tasks/ci.toml?ref=v0.41.1",
-  "git::https://github.com/joeblew999/.github.git//tasks/mise.toml?ref=v0.41.1",
-  "git::https://github.com/joeblew999/.github.git//tasks/release.toml?ref=v0.41.1",
+  "git::https://github.com/joeblew999/.github.git//tasks/ci.toml?ref=v0.43.0",
+  "git::https://github.com/joeblew999/.github.git//tasks/mise.toml?ref=v0.43.0",
+  "git::https://github.com/joeblew999/.github.git//tasks/release.toml?ref=v0.43.0",
 ]
 
 [tools]
