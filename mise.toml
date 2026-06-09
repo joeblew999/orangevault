@@ -49,7 +49,10 @@ includes = [
 [tools]
 node                 = "lts"
 "npm:wrangler"       = "latest"
-"cargo:rbw"          = "1.15"     # rbw — the one Bitwarden client (pure-Rust, daemon-cached unlock)
+# rbw (the Bitwarden client for the rbw:* operator tasks) is NOT a [tools] entry:
+# it pulls unix-only `daemonize`, so declaring it breaks `mise install` on the
+# Windows CI/release runner. Install it once on your (unix) box when you need the
+# rbw:* tasks:  mise use -g cargo:rbw@1.15   (or `cargo install rbw`).
 "github:jdx/fnox"    = "1.24"
 # Rust toolchain comes from system rustup (stable + wasm32-unknown-unknown).
 
