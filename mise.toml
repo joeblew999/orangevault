@@ -41,9 +41,9 @@ experimental = true
 # the CLI build); release:pack + release:github drive multi-arch releases.
 [task_config]
 includes = [
-  "git::https://github.com/joeblew999/.github.git//tasks/ci.toml?ref=v0.67.1",
-  "git::https://github.com/joeblew999/.github.git//tasks/mise.toml?ref=v0.67.1",
-  "git::https://github.com/joeblew999/.github.git//tasks/release.toml?ref=v0.67.1",
+  "git::https://github.com/joeblew999/.github.git//tasks/ci.toml?ref=v0.70.0",
+  "git::https://github.com/joeblew999/.github.git//tasks/mise.toml?ref=v0.70.0",
+  "git::https://github.com/joeblew999/.github.git//tasks/release.toml?ref=v0.70.0",
 ]
 
 [tools]
@@ -53,7 +53,7 @@ node                 = "lts"
 # it pulls unix-only `daemonize`, so declaring it breaks `mise install` on the
 # Windows CI/release runner. Install it once on your (unix) box when you need the
 # rbw:* tasks:  mise use -g cargo:rbw@1.15   (or `cargo install rbw`).
-"github:jdx/fnox"    = "1.24"
+"github:jdx/fnox"    = "1.31"
 # Rust toolchain comes from system rustup (stable + wasm32-unknown-unknown).
 
 # `mise run ci` — the SAME task locally and in .github/workflows/mise.yml. mise
