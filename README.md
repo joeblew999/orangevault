@@ -171,3 +171,8 @@ RSA signing keys are generated on first use and stored in KV.
 ## License
 
 AGPL-3.0, matching [vaultwarden](https://github.com/dani-garcia/vaultwarden), which this is a port of. See [LICENSE](LICENSE).
+
+## Mise workflow retirement
+
+The former shared mise automation is retired. See [MISE-RETIREMENT.md](MISE-RETIREMENT.md)
+for removed commands and CI workflows; `mise.toml` contains the remaining local tasks.
